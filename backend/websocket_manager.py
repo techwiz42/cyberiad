@@ -212,8 +212,8 @@ class ConnectionManager:
             
             await asyncio.sleep(300)  # Run cleanup every 5 minutes
 
-# Create connection manager instance
+
 connection_manager = ConnectionManager()
 
-# Start cleanup task
-asyncio.create_task(connection_manager.cleanup_inactive_connections())
+async def initialize_connection_manager():
+    await connection_manager.cleanup_inactive_connections()

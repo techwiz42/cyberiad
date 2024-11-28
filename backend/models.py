@@ -116,7 +116,7 @@ class Message(Base):
     user_id = Column(UUID, ForeignKey("users.id"), nullable=True)
     agent_id = Column(UUID, ForeignKey("thread_agents.id"), nullable=True)
     content = Column(Text, nullable=False)
-    metadata = Column(JSONB, default={})
+    message_metadata = Column(JSONB, default={})
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
