@@ -1,0 +1,30 @@
+-- New tables needed
+CREATE TABLE threads (
+    id UUID PRIMARY KEY,
+    title TEXT,
+    description TEXT,
+    created_by UUID REFERENCES users(id),
+    created_at TIMESTAMP
+);
+
+CREATE TABLE thread_participants (
+    thread_id UUID REFERENCES threads(id),
+    user_id UUID REFERENCES users(id),
+    role TEXT, -- 'owner', 'participant'
+    joined_at TIMESTAMP
+);
+
+CREATE TABLE thread_agents (
+    thread_id UUID REFERENCES threads(id),
+    agent_type TEXT, -- 'lawyer', 'accountant', etc.
+    is_active BOOLEAN
+);
+
+CREATE TABLE thread_messages (
+    id UUID PRIMARY KEY,
+    thread_id UUID REFERENCES threads(id),
+    sender_type TEXT, -- 'user' or 'agent'
+    sender_id TEXT, -- user_id or agent_type
+    content TEXT,
+    timestamp TIMESTAMP
+);

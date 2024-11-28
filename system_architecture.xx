@@ -1,0 +1,39 @@
+stateDiagram-v2
+    [*] --> ThreadCreation: User Creates Thread
+    
+    state ThreadCreation {
+        [*] --> DefineProject
+        DefineProject --> InviteUsers
+        InviteUsers --> SelectAgents
+        SelectAgents --> InitializeThread
+    }
+
+    state ThreadSession {
+        [*] --> HumanDiscussion
+        HumanDiscussion --> AgentInput
+        AgentInput --> HumanDiscussion
+        
+        state AgentInput {
+            [*] --> AgentSelection
+            AgentSelection --> ContextAnalysis
+            ContextAnalysis --> Response
+            Response --> ThreadUpdate
+        }
+    }
+
+    ThreadCreation --> ThreadSession: Thread Started
+    ThreadSession --> ThreadSession: Continuous Discussion
+    
+    note right of ThreadSession
+        - Real-time updates
+        - Message persistence
+        - Context maintenance
+        - Agent coordination
+    end note
+
+    note right of AgentInput
+        - Role-specific knowledge
+        - Professional guidelines
+        - Ethical considerations
+        - Interaction history
+    end note

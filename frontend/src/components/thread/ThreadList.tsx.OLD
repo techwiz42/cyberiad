@@ -1,0 +1,107 @@
+// src/components/thread/ThreadList.tsx
+'use client'
+
+import { useState, useEffect } from 'react'
+import Link from 'next/link'
+import { Thread, PaginatedResponse, ApiResponse } from '@/types'
+
+interface Thread {
+  id: string
+  title: string
+  description?: string
+  participantCount: number
+  activeAgentCount: number
+  lastActivityAt: string
+}
+
+export function ThreadList() {
+  const [threads, setThreads] = useState<Thread[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    // TODO: Replace with actual API call
+    const fetchThreads = async () => {
+      try {
+        // Simulated data for now
+        const mockThreads: Thread[] = [
+          {
+            id: '1',
+            title: 'Project Discussion',
+            description: 'Planning our new feature rollout',
+            participantCount: 3,
+            activeAgentCount: 2,
+            lastActivityAt: new Date().toISOString()
+          },
+          {
+            id: '2',
+            title: 'Legal Consultation',
+            description: 'Discussing contract terms',
+            participantCount: 2,
+            activeAgentCount: 1,
+            lastActivityAt: new Date().toISOString()
+          }
+        ]
+        setThreads(mockThreads)
+        setIsLoading(false)
+      } catch (err) {
+        setError('Failed to load threads')
+        setIsLoading(false)
+      }
+    }
+
+    fetchThreads()
+  }, [])
+
+  if (isLoading) {
+    return (
+      <div className="flex justify-center items-center h-64">
+        <div className="text-gray-500">Loading threads...</div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-md p-4">
+        <div className="text-red-700">{error}</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      {threads.map((thread) => (
+        <Link 
+          key={thread.id} 
+          href={`/thread/${thread.id}`}
+          className="block"
+        >
+          <div className="bg-white shadow rounded-lg p-6 hover:shadow-md transition-shadow">
+            <h2 className="text-xl font-semibold text-gray-900">
+              {thread.title}
+            </h2>
+            {thread.description && (
+              <p className="mt-2 text-gray-600">
+                {thread.description}
+              </p>
+            )}
+            <div className="mt-4 flex items-center space-x-4 text-sm text-gray-500">
+              <div>
+                {thread.participantCount} participant{thread.participantCount !== 1 ? 's' : ''}
+              </div>
+              <div>•</div>
+              <div>
+                {thread.activeAgentCount} active agent{thread.activeAgentCount !== 1 ? 's' : ''}
+              </div>
+              <div>•</div>
+              <div>
+                Last active: {new Date(thread.lastActivityAt).toLocaleDateString()}
+              </div>
+            </div>
+          </div>
+        </Link>
+      ))}
+    </div>
+  )
+}
