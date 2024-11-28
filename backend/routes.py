@@ -5,10 +5,17 @@ from typing import List, Optional
 from uuid import UUID
 from datetime import datetime
 import json
+import logging
 
 from database import db_manager
 from auth import auth_manager, Token, UserAuth
 from agent_system import agent_manager, AgentRole, AgentResponse
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 
 # Create routers
 auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -19,33 +26,19 @@ agent_router = APIRouter(prefix="/api/agents", tags=["agents"])
 # Auth routes
 @auth_router.post("/register", response_model=Token)
 async def register_user(user_data: UserAuth, db: AsyncSession = Depends(db_manager.get_session)):
-    # Check if user exists
-    existing_user = await db.get_user_by_username(user_data.username)
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Username already registered"
-        )
+    try:
+        existing_user = await db_manager.get_user_by_username(db, user_data.username)
+        if existing_user:
+            raise HTTPException(status_code=400, detail="User already exists")
 
-    # Create user
-    hashed_password = auth_manager.get_password_hash(user_data.password)
-    user = await db.create_user(
-        username=user_data.username,
-        email=user_data.email,
-        hashed_password=hashed_password
-    )
+        hashed_password = auth_manager.get_password_hash(user_data.password)
+        user = await db_manager.create_user(db, user_data.username, user_data.email, hashed_password)
 
-    # Create access token
-    access_token = auth_manager.create_access_token(
-        data={"sub": user.username, "user_id": str(user.id)}
-    )
-
-    return Token(
-        access_token=access_token,
-        token_type="bearer",
-        user_id=str(user.id),
-        username=user.username
-    )
+        access_token = auth_manager.create_access_token(data={"sub": user.username})
+        return {"access_token": access_token, "token_type": "bearer"}
+    except Exception as e:
+        logger.error(f"Error during user registration: {e}")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @auth_router.post("/token", response_model=Token)
 async def login(

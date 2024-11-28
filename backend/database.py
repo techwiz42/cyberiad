@@ -2,6 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import select, and_, or_, desc
 from sqlalchemy.orm import joinedload
+from sqlalchemy.future import select
 from fastapi import WebSocket
 from typing import List, Optional, Dict, AsyncGenerator
 from datetime import datetime
