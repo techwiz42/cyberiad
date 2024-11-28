@@ -5,8 +5,8 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from routes import auth_router, thread_router, message_router, agent_router
 from database import db_manager
-from websocket_manager import connection_manager
-from config import CORS_ORIGINS
+from websocket_manager import connection_manager, initialize_connection_manager
+#from config import CORS_ORIGINS
 
 # Set up logging
 logging.basicConfig(
@@ -20,35 +20,40 @@ app = FastAPI()
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://cyberiad.ai:3000",
+        "http://cyberiad.ai:3001"
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
+# Include routers
 app.include_router(auth_router)
 app.include_router(thread_router)
 app.include_router(message_router)
 app.include_router(agent_router)
 
-@app.websocket("/ws/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: str):
+@app.websocket("/ws/{thread_id}/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, thread_id: str, user_id: str):
     try:
-        await connection_manager.connect(websocket, client_id)
-        while True:
-            data = await websocket.receive_text()
-            await connection_manager.broadcast(f"Client {client_id}: {data}")
+        await connection_manager.connect(websocket, thread_id, user_id)
+        await connection_manager.handle_client_message(websocket, thread_id, user_id)
     except WebSocketDisconnect:
-        await connection_manager.disconnect(websocket, client_id)
+        await connection_manager.disconnect(thread_id, user_id)
     except Exception as e:
-        logger.error(f"WebSocket error: {str(e)}", exc_info=True)
-        await connection_manager.disconnect(websocket, client_id)
+        logger.error(f"WebSocket error for user {user_id} in thread {thread_id}: {str(e)}", exc_info=True)
+        await connection_manager.disconnect(thread_id, user_id)
 
 async def startup():
     """Initialize application on startup."""
     try:
-        await db_manager.create_tables()
-        asyncio.create_task(connection_manager.cleanup_inactive_connections())
+        #await db_manager.create_tables()
+        # Start cleanup task as a background process
+        asyncio.create_task(initialize_connection_manager())
         logger.info("Application startup complete")
     except Exception as e:
         logger.error(f"Startup error: {str(e)}", exc_info=True)
@@ -62,6 +67,7 @@ async def shutdown():
     except Exception as e:
         logger.error(f"Shutdown error: {str(e)}", exc_info=True)
 
+# Add event handlers for startup and shutdown
 app.add_event_handler("startup", startup)
 app.add_event_handler("shutdown", shutdown)
 
@@ -75,3 +81,4 @@ if __name__ == "__main__":
         reload=True,
         log_level="info"
     )
+
