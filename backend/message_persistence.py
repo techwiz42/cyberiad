@@ -1,12 +1,14 @@
-from sqlalchemy import select, and_, desc, func
+# message_persistence.py
+from sqlalchemy import select, and_, desc, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from uuid import UUID
-import json
 import logging
 from fastapi import HTTPException
+
+from models import Message, MessageReadReceipt, User, Base
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +26,7 @@ class MessagePersistenceManager:
                 user_id=message_data.get('user_id'),
                 agent_id=message_data.get('agent_id'),
                 content=message_data['content'],
-                metadata=message_data.get('metadata', {}),
+                message_metadata=message_data.get('metadata', {}),
                 parent_id=message_data.get('parent_id'),
                 edited=False,
                 deleted=False,
@@ -111,10 +113,10 @@ class MessagePersistenceManager:
                 raise HTTPException(status_code=403, detail="Not authorized to edit this message")
 
             # Store original content in metadata
-            if not message.metadata.get('edit_history'):
-                message.metadata['edit_history'] = []
+            if not message.message_metadata.get('edit_history'):
+                message.message_metadata['edit_history'] = []
             
-            message.metadata['edit_history'].append({
+            message.message_metadata['edit_history'].append({
                 'content': message.content,
                 'edited_at': datetime.utcnow().isoformat(),
                 'edited_by': str(editor_id)
@@ -151,7 +153,7 @@ class MessagePersistenceManager:
 
             message.deleted = True
             message.deleted_at = datetime.utcnow()
-            message.metadata['deleted_by'] = str(deleter_id)
+            message.message_metadata['deleted_by'] = str(deleter_id)
 
             await self.db.commit()
             await self.db.refresh(message)
@@ -206,6 +208,28 @@ class MessagePersistenceManager:
             raise HTTPException(
                 status_code=500,
                 detail=f"Error creating read receipt: {str(e)}"
+            )
+
+    async def get_message_by_id(self, message_id: UUID) -> Optional[Message]:
+        """
+        Get a specific message by ID.
+        """
+        try:
+            result = await self.db.execute(
+                select(Message)
+                .where(Message.id == message_id)
+                .options(
+                    joinedload(Message.user),
+                    joinedload(Message.agent),
+                    joinedload(Message.read_receipts)
+                )
+            )
+            return result.scalars().first()
+        except Exception as e:
+            logger.error(f"Error retrieving message: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error retrieving message: {str(e)}"
             )
 
     async def get_unread_count(self, thread_id: UUID, user_id: UUID) -> int:
@@ -290,53 +314,3 @@ class MessagePersistenceManager:
                 status_code=500,
                 detail=f"Error marking thread read: {str(e)}"
             )
-
-    async def get_message_by_id(self, message_id: UUID) -> Optional[Message]:
-        """
-        Get a specific message by ID.
-        """
-        try:
-            result = await self.db.execute(
-                select(Message)
-                .where(Message.id == message_id)
-                .options(
-                    joinedload(Message.user),
-                    joinedload(Message.agent),
-                    joinedload(Message.read_receipts)
-                )
-            )
-            return result.scalars().first()
-        except Exception as e:
-            logger.error(f"Error retrieving message: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Error retrieving message: {str(e)}"
-            )
-
-# Database models for message persistence
-class MessageReadReceipt(Base):
-    __tablename__ = "message_read_receipts"
-
-    id = Column(UUID, primary_key=True, default=uuid.uuid4)
-    message_id = Column(UUID, ForeignKey("messages.id", ondelete="CASCADE"))
-    user_id = Column(UUID, ForeignKey("users.id", ondelete="CASCADE"))
-    read_at = Column(DateTime, nullable=False)
-
-    message = relationship("Message", back_populates="read_receipts")
-    user = relationship("User")
-
-# Add to Message model
-class Message(Base):
-    __tablename__ = "messages"
-
-    # Existing fields...
-    parent_id = Column(UUID, ForeignKey("messages.id"), nullable=True)
-    edited = Column(Boolean, default=False)
-    edited_at = Column(DateTime, nullable=True)
-    deleted = Column(Boolean, default=False)
-    deleted_at = Column(DateTime, nullable=True)
-    client_generated_id = Column(String, nullable=True)
-
-    # Relationships
-    read_receipts = relationship("MessageReadReceipt", back_populates="message", cascade="all, delete-orphan")
-    replies = relationship("Message", backref=backref("parent", remote_side=[id]))

@@ -1,0 +1,154 @@
+# tests/test_agent_system.py
+import pytest
+from unittest.mock import AsyncMock, Mock, patch
+from datetime import datetime, UTC, timedelta
+from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import uuid4
+from jose import jwt
+
+from agent_system import AgentSystem, AgentRole, AgentResponse, AGENTS
+from auth import AuthManager, JWT_SECRET_KEY, JWT_ALGORITHM
+from models import User, UserRole
+from .conftest import test_engine, test_db_session
+
+@pytest.fixture
+def auth_manager():
+    return AuthManager()
+
+@pytest.fixture
+async def test_user(test_db_session):
+    user = User(
+        username="testuser",
+        email="test@example.com",
+        hashed_password="hashed_password",
+        role=UserRole.USER
+    )
+    test_db_session.add(user)
+    await test_db_session.commit()
+    await test_db_session.refresh(user)
+    return user
+
+@pytest.mark.asyncio
+async def test_authenticate_user(auth_manager, test_db_session, test_user):
+    """Test user authentication with database"""
+    # Test valid credentials
+    user = await auth_manager.authenticate_user(
+        test_db_session,
+        test_user.username,
+        "correct_password"
+    )
+    assert user is not None
+    assert user.username == test_user.username
+
+    # Test invalid password
+    user = await auth_manager.authenticate_user(
+        test_db_session,
+        test_user.username,
+        "wrong_password"
+    )
+    assert user is None
+
+@pytest.mark.asyncio
+async def test_register_user(test_db_session):
+    """Test user registration"""
+    auth_manager = AuthManager()
+    
+    user_data = {
+        "username": "newuser",
+        "email": "new@example.com",
+        "password": "password123"
+    }
+    
+    # Create user
+    hashed_password = auth_manager.get_password_hash(user_data["password"])
+    user = User(
+        username=user_data["username"],
+        email=user_data["email"],
+        hashed_password=hashed_password,
+        role=UserRole.USER
+    )
+    
+    test_db_session.add(user)
+    await test_db_session.commit()
+    
+    # Verify user was created
+    result = await test_db_session.get(User, user.id)
+    assert result is not None
+    assert result.username == user_data["username"]
+    assert result.email == user_data["email"]
+
+@pytest.mark.asyncio
+async def test_create_access_token(auth_manager):
+    """Test JWT token creation"""
+    data = {"sub": "testuser"}
+    token = auth_manager.create_access_token(data)
+    
+    # Verify token
+    decoded = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+    assert decoded["sub"] == "testuser"
+    assert "exp" in decoded
+
+    # Ensure expiration is in the future
+    exp = datetime.fromtimestamp(decoded["exp"], UTC)
+    assert exp > datetime.now(UTC)
+
+@pytest.mark.asyncio
+async def test_agent_roles_enum():
+    assert AgentRole.DOCTOR.value == "doctor"
+    assert AgentRole.LAWYER.value == "lawyer"
+    assert AgentRole.ACCOUNTANT.value == "accountant"
+    assert AgentRole.ETHICIST.value == "ethicist"
+
+@pytest.mark.asyncio
+async def test_transfer_to_valid_agent():
+    system = AgentSystem()
+    agent = system.transfer_to("doctor")
+    assert agent.name == "doctor"
+    assert agent.instructions.startswith("As a medical professional")
+
+@pytest.mark.asyncio
+async def test_transfer_to_invalid_agent():
+    system = AgentSystem()
+    agent = system.transfer_to("invalid_agent")
+    assert agent is None
+
+@pytest.mark.asyncio
+async def test_agent_response():
+    mock_agent = Mock()
+    mock_agent.name = "doctor"
+    with patch.dict(AGENTS, {"doctor": mock_agent}):
+        system = AgentSystem()
+        agent = system.transfer_to("doctor")
+        assert agent == mock_agent
+
+@pytest.mark.asyncio
+async def test_database_cleanup(test_db_session, test_user):
+    """Test database cleanup after test"""
+    # Query after test_user creation
+    result = await test_db_session.get(User, test_user.id)
+    assert result is not None
+    
+    # Rollback should happen automatically after test
+    await test_db_session.rollback()
+    
+    # Start new transaction
+    async with test_db_session.begin():
+        new_result = await test_db_session.get(User, test_user.id)
+        assert new_result is not None  # Data should persist until explicit cleanup
+
+@pytest.mark.asyncio
+async def test_concurrent_agent_operations():
+    """Test multiple agent operations happening concurrently"""
+    system = AgentSystem()
+    
+    async def transfer_and_check(agent_role: str):
+        agent = system.transfer_to(agent_role)
+        return agent is not None
+    
+    # Try multiple concurrent transfers
+    roles = ["doctor", "lawyer", "accountant"]
+    results = await asyncio.gather(*[
+        transfer_and_check(role) for role in roles
+    ])
+    
+    assert all(results)  # All transfers should succeed

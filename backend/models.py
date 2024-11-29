@@ -1,3 +1,4 @@
+# models.py
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Text, Enum, UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -31,22 +32,6 @@ AsyncSessionLocal = sessionmaker(
 
 Base = declarative_base()
 
-class User(Base):
-    __tablename__ = 'users'
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    username = Column(String, nullable=False, unique=True)
-    email = Column(String, nullable=False, unique=True)
-    hashed_password = Column(String, nullable=False)
-    role = Column(userrole_enum, nullable=False, server_default='USER')  # Default to 'USER'
-    created_at = Column(DateTime, default=datetime.utcnow)
-    last_login = Column(DateTime, nullable=True)
-    is_active = Column(Boolean, default=True)
-
-class UserRole(enum.Enum):
-    ADMIN = "admin"
-    USER = "user"
-
 class AgentType(enum.Enum):
     LAWYER = "lawyer"
     ACCOUNTANT = "accountant"
@@ -60,18 +45,22 @@ class ThreadStatus(enum.Enum):
     ARCHIVED = "archived"
     CLOSED = "closed"
 
+class UserRole(enum.Enum):
+    ADMIN = "admin"
+    USER = "user"
+
 class User(Base):
     __tablename__ = "users"
 
-    id = Column(UUID, primary_key=True, default=uuid.uuid4)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     username = Column(String, unique=True, index=True)
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
-    role = Column(Enum(UserRole), default=UserRole.USER)
+    role = Column(Enum(UserRole, name='user_role'), default=UserRole.USER)  # Fix the enum name
     created_at = Column(DateTime, default=datetime.utcnow)
     last_login = Column(DateTime)
     is_active = Column(Boolean, default=True)
-    
+
     # Relationships
     owned_threads = relationship("Thread", back_populates="owner")
     participations = relationship("ThreadParticipant", back_populates="user")
@@ -79,7 +68,7 @@ class User(Base):
 class Thread(Base):
     __tablename__ = "threads"
 
-    id = Column(UUID, primary_key=True, default=uuid.uuid4)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title = Column(String, nullable=False)
     description = Column(Text)
     owner_id = Column(UUID, ForeignKey("users.id"))
@@ -110,7 +99,7 @@ class ThreadParticipant(Base):
 class ThreadAgent(Base):
     __tablename__ = "thread_agents"
 
-    id = Column(UUID, primary_key=True, default=uuid.uuid4)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     thread_id = Column(UUID, ForeignKey("threads.id"))
     agent_type = Column(Enum(AgentType))
     is_active = Column(Boolean, default=True)
@@ -124,18 +113,38 @@ class ThreadAgent(Base):
 class Message(Base):
     __tablename__ = "messages"
 
-    id = Column(UUID, primary_key=True, default=uuid.uuid4)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     thread_id = Column(UUID, ForeignKey("threads.id"))
     user_id = Column(UUID, ForeignKey("users.id"), nullable=True)
     agent_id = Column(UUID, ForeignKey("thread_agents.id"), nullable=True)
     content = Column(Text, nullable=False)
     message_metadata = Column(JSONB, default={})
     created_at = Column(DateTime, default=datetime.utcnow)
+    parent_id = Column(UUID, ForeignKey("messages.id"), nullable=True)
+    edited = Column(Boolean, default=False)
+    edited_at = Column(DateTime, nullable=True)
+    deleted = Column(Boolean, default=False)
+    deleted_at = Column(DateTime, nullable=True)
+    client_generated_id = Column(String, nullable=True)
     
     # Relationships
     thread = relationship("Thread", back_populates="messages")
     user = relationship("User")
     agent = relationship("ThreadAgent", back_populates="messages")
+    read_receipts = relationship("MessageReadReceipt", back_populates="message", cascade="all, delete-orphan")
+    replies = relationship("Message", backref="parent", remote_side=[id])
+
+class MessageReadReceipt(Base):
+    __tablename__ = "message_read_receipts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    message_id = Column(UUID, ForeignKey("messages.id", ondelete="CASCADE"))
+    user_id = Column(UUID, ForeignKey("users.id", ondelete="CASCADE"))
+    read_at = Column(DateTime, nullable=False)
+
+    # Relationships
+    message = relationship("Message", back_populates="read_receipts")
+    user = relationship("User")
 
 # Database Manager Class
 class DatabaseManager:
