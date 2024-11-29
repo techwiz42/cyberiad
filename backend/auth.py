@@ -4,9 +4,12 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from jose import JWTError, jwt
 from pydantic import BaseModel
 import os
+
+from models import User 
 
 # Models
 class Token(BaseModel):
@@ -46,7 +49,11 @@ class AuthManager:
         return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
         
     async def authenticate_user(self, db: AsyncSession, username: str, password: str):
-        user = await db.get_user_by_username(username)
+        result = await db.execute(
+            select(User).where(User.username == username)
+        )
+        user = result.scalar_one_or_none()
+        
         if not user:
             return None
         if not self.verify_password(password, user.hashed_password):
@@ -68,7 +75,11 @@ class AuthManager:
         except JWTError:
             raise credentials_exception
             
-        user = await db.get_user_by_username(username)
+        result = await db.execute(
+            select(User).where(User.username == username)
+        )
+        user = result.scalar_one_or_none()
+        
         if user is None:
             raise credentials_exception
         return user

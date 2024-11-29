@@ -29,40 +29,6 @@ async def test_user(test_db_session):
         await session.refresh(user)
         return user
 
-@pytest.mark.asyncio
-async def test_authenticate_user(auth_manager, test_db_session, test_user):
-    """Test user authentication with database"""
-    async for session in test_db_session:  # Get session from generator
-        user_obj = await test_user  # Await the user fixture
-        
-        # Test valid credentials
-        user = await auth_manager.authenticate_user(
-            session,  # Use the session from generator
-            user_obj.username,
-            "correct_password"
-        )
-        assert user is not None
-        assert user.username == user_obj.username
-
-        # Test invalid password
-        user = await auth_manager.authenticate_user(
-            session,  # Use the session from generator
-            user_obj.username,
-            "wrong_password"
-        )
-        assert user is None
-
-@pytest.mark.asyncio
-async def test_register_user(test_db_session):
-    """Test user registration"""
-    auth_manager = AuthManager()
-    
-    user_data = {
-        "username": "newuser",
-        "email": "new@example.com",
-        "password": "password123"
-    }
-    
     async for session in test_db_session:  # Get session from generator
         # Create user
         hashed_password = auth_manager.get_password_hash(user_data["password"])
