@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import AsyncMock, Mock
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
+from sqlalchemy import select
 from database import DatabaseManager
 from models import User, Thread, ThreadParticipant, Message
 from fastapi import WebSocket
@@ -112,7 +113,7 @@ async def test_get_thread(test_db_session):
         assert found_thread.id == thread.id
         assert found_thread.title == "Find This Thread"
 
-'''
+
 @pytest.mark.asyncio
 async def test_get_user_threads(test_db_session):
     """Test retrieval of all user's threads."""
@@ -164,24 +165,25 @@ async def test_thread_participant(test_db_session):
             title="Participant Thread"
         )
         
-        # Add participant
-        participant = await db_manager.add_thread_participant(
-            session,
-            thread.id,
-            user.id
-        )
-        
-        assert participant.thread_id == thread.id
-        assert participant.user_id == user.id
-        
-        # Verify participation
+        # Verify the participant was added by create_thread
         is_participant = await db_manager.is_thread_participant(
             session,
             thread.id,
             user.id
         )
         assert is_participant is True
-'''
+
+        # Test participant properties
+        result = await session.execute(
+            select(ThreadParticipant).where(
+                ThreadParticipant.thread_id == thread.id,
+                ThreadParticipant.user_id == user.id
+            )
+        )
+        participant = result.scalar_one()
+        assert participant.thread_id == thread.id
+        assert participant.user_id == user.id
+        assert participant.is_active is True
 
 @pytest.mark.asyncio
 async def test_messages(test_db_session):

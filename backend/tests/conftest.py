@@ -1,7 +1,6 @@
 import os
 import sys
 from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parent / "backend"))
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 import pytest
@@ -10,7 +9,10 @@ import asyncpg
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
-from models import Base
+from uuid import uuid4
+from datetime import datetime, UTC
+from models import Base, User, Thread, ThreadParticipant, UserRole, ThreadStatus
+
 
 # Database configuration
 DB_HOST = os.getenv('TEST_DB_HOST', 'localhost')
@@ -50,6 +52,59 @@ async def create_test_database():
     except Exception as e:
         print(f"Error creating database: {e}")
         raise
+
+@pytest.fixture
+async def test_engine():
+    """Create test engine instance."""
+    return engine
+
+@pytest.fixture
+async def reset_db(test_engine):
+    """Reset database state between tests."""
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    return True  # Return a simple value instead of the engine
+
+@pytest.fixture
+async def test_thread(test_db_session):
+    """Create a test thread with owner for testing."""
+    async with test_db_session as session:
+        # Create a test user
+        test_user = User(
+            id=uuid4(),
+            username=f"testuser_{uuid4().hex[:8]}",
+            email=f"test_{uuid4().hex[:8]}@example.com",
+            hashed_password="test_password",
+            role=UserRole.USER,
+            created_at=datetime.now(UTC)
+        )
+        session.add(test_user)
+        await session.flush()
+
+        # Create a test thread
+        test_thread = Thread(
+            id=uuid4(),
+            title="Test Thread",
+            owner_id=test_user.id,
+            status=ThreadStatus.ACTIVE,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC)
+        )
+        session.add(test_thread)
+        await session.flush()
+
+        # Add user as thread participant
+        thread_participant = ThreadParticipant(
+            thread_id=test_thread.id,
+            user_id=test_user.id,
+            joined_at=datetime.now(UTC),
+            is_active=True
+        )
+        session.add(thread_participant)
+        
+        await session.commit()
+        return test_thread.id, test_user.id
 
 async def setup_tables():
     """Create all tables in the test database."""

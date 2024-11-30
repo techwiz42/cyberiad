@@ -1,23 +1,21 @@
-# tests/test_database_reliability.py
 import pytest
 import gc
 import psutil
 import asyncio
 import os
-import sys
 from pathlib import Path
-import weakref
 from fastapi import WebSocket
 from sqlalchemy import text
 from datetime import datetime, timedelta
 from uuid import uuid4
+import sys
 
-sys.path.append(str(Path(__file__).resolve().parent / "backend"))
+# Add backend directory to path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from .conftest import test_engine, test_db_session, reset_db
 from database import DatabaseManager
-from models import Thread, Message, ThreadParticipant, ThreadAgent, AgentType
+from models import User, Thread, Message, ThreadParticipant, ThreadAgent, AgentType, ThreadStatus
+from .conftest import test_db_session, test_engine, reset_db
 
 class MockWebSocket:
     def __init__(self):
@@ -91,7 +89,7 @@ async def test_thread_management_reliability(test_db_session, reset_db, process)
     gc.collect()
     final_memory = process.memory_info().rss
     assert (final_memory - initial_memory) < 10 * 1024 * 1024
-    
+
 @pytest.mark.asyncio
 async def test_message_persistence_reliability(test_db_session, test_thread, reset_db):
     """Test message handling under heavy load."""

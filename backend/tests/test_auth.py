@@ -13,7 +13,6 @@ from fastapi import HTTPException
 from jose import jwt, JWTError
 import sys
 from pathlib import Path
-sys.path.append(str(Path(__file__).resolve().parent / "backend"))
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from models import User, UserRole
 from .conftest import test_db_session
@@ -131,7 +130,7 @@ async def test_authenticate_user(test_db_session: AsyncSession):
                 "wrong_password"
             )
             assert non_authenticated_user is None
-'''
+
 @pytest.mark.asyncio
 async def test_get_current_user_valid_token(auth_manager, test_db_session, test_user):
     """Test that a valid token correctly returns the associated user."""
@@ -141,13 +140,13 @@ async def test_get_current_user_valid_token(auth_manager, test_db_session, test_
     token = auth_manager.create_access_token({"sub": user.username})
 
     # Retrieve the current user with the token
-    async for session in test_db_session:
+    async with test_db_session as session:
         current_user = await auth_manager.get_current_user(token, session)
         
         # Validate the retrieved user
         assert current_user is not None
         assert current_user.username == user.username
-'''        
+       
 @pytest.mark.asyncio
 async def test_get_current_user_invalid_token(auth_manager, test_db_session):
     """Test that an invalid token is properly rejected."""
@@ -156,7 +155,7 @@ async def test_get_current_user_invalid_token(auth_manager, test_db_session):
             await auth_manager.get_current_user("invalid_token", session)
         assert exc_info.value.status_code == 401
         assert "Invalid authentication credentials" in exc_info.value.detail
-'''
+
 @pytest.mark.asyncio
 async def test_get_current_user_expired_token(auth_manager, test_db_session, test_user):
     """Test that an expired token is properly rejected."""
@@ -175,7 +174,7 @@ async def test_get_current_user_expired_token(auth_manager, test_db_session, tes
             await auth_manager.get_current_user(expired_token, session)
         assert exc_info.value.status_code == 401
         assert "Invalid authentication credentials" in exc_info.value.detail
-'''        
+    
 
 def test_token_model():
     """Test Token model creation and validation."""

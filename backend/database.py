@@ -90,7 +90,7 @@ class DatabaseManager:
             .order_by(desc(Thread.updated_at))
             .options(joinedload(Thread.participants))
         )
-        return result.scalars().all()
+        return result.scalars().unique().all()
 
     async def add_thread_participant(self, session: AsyncSession, thread_id: UUID, user_id: UUID):
         try:
