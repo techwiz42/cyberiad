@@ -3,9 +3,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from typing import Optional, Dict
-import time
-import jwt
 from datetime import datetime, timedelta
+import jwt
 import logging
 import os
 
@@ -26,6 +25,22 @@ class SecurityManager:
         self.api_key_cache: Dict[str, datetime] = {}
         self.failed_attempts: Dict[str, int] = {}
         self.blocked_ips: Dict[str, datetime] = {}
+
+    async def cleanup(self):
+        """Remove expired entries from caches."""
+        current_time = datetime.utcnow()
+        
+        # Clean api_key_cache
+        self.api_key_cache = {
+            k: v for k, v in self.api_key_cache.items()
+            if (current_time - v).total_seconds() < 3600  # Remove entries older than 1 hour
+        }
+        
+        # Clean blocked_ips
+        self.blocked_ips = {
+            k: v for k, v in self.blocked_ips.items()
+            if v > current_time
+        }
 
     async def check_rate_limit(self, request: Request, limit: str, duration: int):
         """Check rate limit for request."""
@@ -71,7 +86,7 @@ class JWTBearer(HTTPBearer):
         if not credentials:
             raise HTTPException(
                 status_code=403,
-                detail="Invalid authorization code."
+                detail="Invalid authentication credentials"
             )
             
         if not credentials.scheme == "Bearer":
@@ -88,13 +103,13 @@ class JWTBearer(HTTPBearer):
             )
         except jwt.ExpiredSignatureError:
             raise HTTPException(
-                status_code=403,
-                detail="Token has expired."
+                status_code=401,
+                detail="Token has expired"
             )
         except jwt.PyJWTError:
             raise HTTPException(
                 status_code=403,
-                detail="Invalid token."
+                detail="Invalid token"
             )
             
         return payload
@@ -103,9 +118,9 @@ class JWTBearer(HTTPBearer):
 def rate_limit(limit: str, duration: int):
     """Rate limit decorator."""
     def decorator(func):
-        async def wrapper(*args, request: Request, **kwargs):
+        async def wrapper(request: Request, *args, **kwargs):
             await security_manager.check_rate_limit(request, limit, duration)
-            return await func(*args, request=request, **kwargs)
+            return await func(request=request, *args, **kwargs)
         return wrapper
     return decorator
 
