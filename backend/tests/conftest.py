@@ -25,6 +25,15 @@ POSTGRES_URL = f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/postgres"
 TEST_DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
 @pytest.fixture
+async def reliability_reset():
+    """Reset database state for reliability tests."""
+    async def _reset():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+            await conn.run_sync(Base.metadata.create_all)
+    return _reset()
+
+@pytest.fixture
 def mock_message(mock_user):
     """Fixture to provide a mock message for tests."""
     return Message(
