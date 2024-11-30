@@ -7,20 +7,22 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 import pytest
 import uuid
 from datetime import datetime
-from sqlalchemy import text
-
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+import functools
 from models import User, Thread, ThreadParticipant, ThreadAgent, Message, UserRole, AgentType, ThreadStatus
 from .conftest import test_db_session
 
+pytestmark = pytest.mark.asyncio  # Mark all tests in this module as async
+
 @pytest.fixture
-async def test_user(test_db_session):
-    """Create a test user."""
-    session = None
-    async for s in test_db_session:
-        session = s
+async def test_user(test_db_session: AsyncSession):
+    """Create a test user with a unique username."""
+    async with test_db_session as session:
+        unique_username = f"testuser_{uuid.uuid4().hex[:8]}"
         user = User(
-            username="testuser",
-            email="test@example.com",
+            username=unique_username,
+            email=f"{unique_username}@example.com",
             hashed_password="hashed_password_here",
             role=UserRole.USER
         )
@@ -30,16 +32,13 @@ async def test_user(test_db_session):
         return user
 
 @pytest.fixture
-async def test_thread(test_db_session, test_user):
-    """Create a test thread."""
-    user = await test_user
-    session = None
-    async for s in test_db_session:
-        session = s
+async def test_thread(test_db_session: AsyncSession, test_user: User):
+    """Create a test thread with the test user as owner."""
+    async with test_db_session as session:
         thread = Thread(
             title="Test Thread",
             description="Test Description",
-            owner_id=user.id,
+            owner_id=test_user.id,  # Use test_user directly, no await
             status=ThreadStatus.ACTIVE
         )
         session.add(thread)
@@ -51,9 +50,10 @@ async def test_thread(test_db_session, test_user):
 async def test_user_creation(test_db_session):
     """Test user creation and attributes."""
     async for session in test_db_session:
+        unique_username = f"newuser_{uuid.uuid4().hex[:8]}"
         user = User(
-            username="newuser",
-            email="new@example.com",
+            username=unique_username,
+            email=f"{unique_username}@example.com",
             hashed_password="hashed",
             role=UserRole.USER
         )
@@ -62,8 +62,8 @@ async def test_user_creation(test_db_session):
         await session.refresh(user)
         
         assert isinstance(user.id, uuid.UUID)
-        assert user.username == "newuser"
-        assert user.email == "new@example.com"
+        assert user.username == unique_username
+        assert user.email == f"{unique_username}@example.com"
         assert user.role == UserRole.USER
         assert user.is_active is True
         assert isinstance(user.created_at, datetime)
@@ -90,35 +90,31 @@ async def test_thread_creation(test_db_session, test_user):
         assert isinstance(thread.created_at, datetime)
         assert isinstance(thread.updated_at, datetime)
 
-@pytest.mark.asyncio
-async def test_thread_participant(test_db_session, test_user, test_thread):
+async def test_thread_participant(test_db_session: AsyncSession, test_user: User, test_thread: Thread):
     """Test thread participant creation and attributes."""
-    user = await test_user
-    thread = await test_thread
-    
-    async for session in test_db_session:
-        # Check if participant already exists
-        stmt = text("""
-            SELECT 1 FROM thread_participants 
-            WHERE thread_id = :thread_id AND user_id = :user_id
-        """)
-        result = await session.execute(
-            stmt, 
-            {"thread_id": str(thread.id), "user_id": str(user.id)}
+    async with test_db_session as session:
+        # Check if participant exists using ORM
+        stmt = select(ThreadParticipant).where(
+            ThreadParticipant.thread_id == test_thread.id,  # Use directly, no await
+            ThreadParticipant.user_id == test_user.id       # Use directly, no await
         )
-        if not result.scalar():
+        result = await session.execute(stmt)
+        existing = result.scalar_one_or_none()
+        
+        if not existing:
             participant = ThreadParticipant(
-                thread_id=thread.id,
-                user_id=user.id
+                thread_id=test_thread.id,
+                user_id=test_user.id
             )
             session.add(participant)
             await session.commit()
             await session.refresh(participant)
             
-            assert participant.thread_id == thread.id
-            assert participant.user_id == user.id
+            assert participant.thread_id == test_thread.id
+            assert participant.user_id == test_user.id
             assert participant.is_active is True
             assert isinstance(participant.joined_at, datetime)
+
 
 @pytest.mark.asyncio
 async def test_thread_agent(test_db_session, test_thread):
@@ -170,23 +166,20 @@ async def test_relationships(test_db_session, test_user, test_thread):
     user = await test_user
     thread = await test_thread
     async for session in test_db_session:
-        # Create thread participant if not exists
-        stmt = text("""
-            SELECT 1 FROM thread_participants 
-            WHERE thread_id = :thread_id AND user_id = :user_id
-        """)
-        result = await session.execute(
-            stmt, 
-            {"thread_id": str(thread.id), "user_id": str(user.id)}
+        # Check for existing participant using ORM
+        exists = await session.execute(
+            select(ThreadParticipant).where(
+                ThreadParticipant.thread_id == thread.id,
+                ThreadParticipant.user_id == user.id
+            )
         )
-        if not result.scalar():
+        if not exists.scalar_one_or_none():
             participant = ThreadParticipant(
                 thread_id=thread.id,
                 user_id=user.id
             )
             session.add(participant)
         
-        # Create message
         message = Message(
             thread_id=thread.id,
             user_id=user.id,
@@ -205,11 +198,18 @@ async def test_relationships(test_db_session, test_user, test_thread):
         assert any(m.content == "Test message" for m in thread.messages)
 
 @pytest.mark.asyncio
-async def test_cascade_deletes(test_db_session, test_thread):
+async def test_cascade_deletes(test_db_session, test_thread, test_user):
     """Test cascade deletions."""
     thread = await test_thread
+    user = await test_user
     async for session in test_db_session:
-        # Create related records
+        # Create all related records
+        participant = ThreadParticipant(
+            thread_id=thread.id,
+            user_id=user.id
+        )
+        session.add(participant)
+        
         agent = ThreadAgent(
             thread_id=thread.id,
             agent_type=AgentType.LAWYER
@@ -227,30 +227,31 @@ async def test_cascade_deletes(test_db_session, test_thread):
         await session.delete(thread)
         await session.commit()
         
-        # Verify records are deleted
-        stmt = text("SELECT 1 FROM thread_agents WHERE thread_id = :thread_id")
-        result = await session.execute(stmt, {"thread_id": str(thread.id)})
-        assert result.scalar() is None
+        # Verify records are deleted using ORM
+        assert await session.execute(
+            select(ThreadAgent).where(ThreadAgent.thread_id == thread.id)
+        ).scalar_one_or_none() is None
         
-        stmt = text("SELECT 1 FROM messages WHERE thread_id = :thread_id")
-        result = await session.execute(stmt, {"thread_id": str(thread.id)})
-        assert result.scalar() is None
+        assert await session.execute(
+            select(Message).where(Message.thread_id == thread.id)
+        ).scalar_one_or_none() is None
+        
+        assert await session.execute(
+            select(ThreadParticipant).where(ThreadParticipant.thread_id == thread.id)
+        ).scalar_one_or_none() is None
 
-@pytest.mark.asyncio
-async def test_user_roles():
+def test_user_roles():
     """Test user role enum values."""
     assert UserRole.ADMIN.value == "admin"
     assert UserRole.USER.value == "user"
 
-@pytest.mark.asyncio
-async def test_agent_types():
+def test_agent_types():
     """Test agent type enum values."""
     assert AgentType.LAWYER.value == "lawyer"
     assert AgentType.ACCOUNTANT.value == "accountant"
     assert AgentType.PSYCHOLOGIST.value == "psychologist"
 
-@pytest.mark.asyncio
-async def test_thread_statuses():
+def test_thread_statuses():
     """Test thread status enum values."""
     assert ThreadStatus.ACTIVE.value == "active"
     assert ThreadStatus.ARCHIVED.value == "archived"

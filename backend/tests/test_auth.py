@@ -3,6 +3,11 @@ import pytest
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import text
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
+from fastapi.security import OAuth2PasswordBearer
+import time
+from pydantic import ValidationError 
 from unittest.mock import patch
 from fastapi import HTTPException
 from jose import jwt, JWTError
@@ -24,57 +29,27 @@ from auth import (
 @pytest.fixture
 def auth_manager():
     return AuthManager()
-'''
-@pytest.fixture
-async def test_user(test_db_session):
-    for session in test_db_session:
-        # Create a test user with known credentials
-        auth_mgr = AuthManager()
-        hashed_password = auth_mgr.get_password_hash("testpassword123")
-        user_data = {
-            "username": "testuser",
-            "email": "test@example.com",
-            "hashed_password": hashed_password
-        }
-    
-        # Use your database manager to create user
-        # This will depend on your actual User model and database structure
-        result = await session.execute(
-            "INSERT INTO users (username, email, hashed_password) "
-            "VALUES (:username, :email, :hashed_password) RETURNING id, username, email",
-            user_data
-        )
-        user = result.fetchone()
-        await session.commit()
-        return user
-'''
 
 @pytest.fixture
 async def test_user(test_db_session):
     async for session in test_db_session:
         auth_mgr = AuthManager()
         hashed_password = auth_mgr.get_password_hash("testpassword123")
-        user_data = {
-            "username": "testuser",
-            "email": "test@example.com",
-            "hashed_password": hashed_password,
-        }
-
-        # Wrap the SQL query with text()
-        result = await session.execute(
-            text(
-                """
-                INSERT INTO users (username, email, hashed_password)
-                VALUES (:username, :email, :hashed_password)
-                RETURNING id, username, email
-                """
-            ),
-            user_data,
+        
+        # Use a random username to avoid conflicts
+        unique_username = f"testuser_{uuid.uuid4().hex[:8]}"
+        
+        # Use ORM instead of raw SQL
+        user = User(
+            username=unique_username,
+            email=f"{unique_username}@example.com",
+            hashed_password=hashed_password,
+            role=UserRole.USER
         )
-        user = result.fetchone()
+        session.add(user)
         await session.commit()
-        yield user
-
+        await session.refresh(user)
+        return user
 
 def test_password_hashing(auth_manager):
     password = "mysecretpassword"
@@ -159,80 +134,171 @@ async def test_authenticate_user(test_db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_get_current_user_valid_token(auth_manager, test_db_session, test_user):
-    # Consume the yielded user from the test_user fixture
-    async for user in test_user:
-        # Create a valid token for the user
-        token = auth_manager.create_access_token({"sub": user.username})
+    """Test that a valid token correctly returns the associated user."""
+    user = await test_user  # Await the coroutine instead of iterating
+    
+    # Create a valid token for the user
+    token = auth_manager.create_access_token({"sub": user.username})
 
-        # Retrieve the current user with the token
-        async for session in test_db_session:
-            current_user = await auth_manager.get_current_user(token, session)
-
+    # Retrieve the current user with the token
+    async for session in test_db_session:
+        current_user = await auth_manager.get_current_user(token, session)
+        
         # Validate the retrieved user
         assert current_user is not None
         assert current_user.username == user.username
-
-'''
+        
 @pytest.mark.asyncio
 async def test_get_current_user_invalid_token(auth_manager, test_db_session):
-    with pytest.raises(HTTPException) as exc_info:
-        await auth_manager.get_current_user("invalid_token", test_db_session)
-    assert exc_info.value.status_code == 401
-    assert "Invalid authentication credentials" in exc_info.value.detail
+    """Test that an invalid token is properly rejected."""
+    async for session in test_db_session:
+        with pytest.raises(HTTPException) as exc_info:
+            await auth_manager.get_current_user("invalid_token", session)
+        assert exc_info.value.status_code == 401
+        assert "Invalid authentication credentials" in exc_info.value.detail
 
 @pytest.mark.asyncio
 async def test_get_current_user_expired_token(auth_manager, test_db_session, test_user):
+    """Test that an expired token is properly rejected."""
+    # First get the test user
+    user = await test_user
+    
     # Create a token that's already expired
-    data = {"sub": test_user.username, "exp": datetime.utcnow() - timedelta(minutes=1)}
+    data = {
+        "sub": user.username, 
+        "exp": datetime.utcnow() - timedelta(minutes=1)
+    }
     expired_token = jwt.encode(data, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     
-    with pytest.raises(HTTPException) as exc_info:
-        await auth_manager.get_current_user(expired_token, test_db_session)
-    assert exc_info.value.status_code == 401
+    async for session in test_db_session:
+        with pytest.raises(HTTPException) as exc_info:
+            await auth_manager.get_current_user(expired_token, session)
+        assert exc_info.value.status_code == 401
+        assert "Invalid authentication credentials" in exc_info.value.detail
+        
 
 def test_token_model():
+    """Test Token model creation and validation."""
     token_data = {
         "access_token": "some_token",
         "token_type": "bearer",
-        "user_id": "123",
+        "user_id": str(uuid.uuid4()),  # Use proper UUID string
         "username": "testuser"
     }
     token = Token(**token_data)
-    assert token.access_token == "some_token"
-    assert token.token_type == "bearer"
-    assert token.user_id == "123"
-    assert token.username == "testuser"
+    
+    # Test all fields
+    assert token.access_token == token_data["access_token"]
+    assert token.token_type == token_data["token_type"]
+    assert token.user_id == token_data["user_id"]
+    assert token.username == token_data["username"]
+    
+    # Test model conversion to dict
+    token_dict = token.model_dump()
+    assert all(token_dict[k] == v for k, v in token_data.items())
+
+def test_token_model_validation():
+    """Test Token model validation rules."""
+    # Test required fields
+    with pytest.raises(ValueError):
+        Token()  # Should fail without required fields
+    
+    # Test invalid token type
+    with pytest.raises(ValueError):
+        Token(
+            access_token="token",
+            token_type="invalid",
+            user_id=str(uuid.uuid4()),
+            username="testuser"
+        )
 
 def test_user_auth_model():
+    """Test UserAuth model creation and validation."""
     user_data = {
         "username": "newuser",
         "email": "new@example.com",
         "password": "password123"
     }
     user_auth = UserAuth(**user_data)
-    assert user_auth.username == "newuser"
-    assert user_auth.email == "new@example.com"
-    assert user_auth.password == "password123"
-
-@pytest.mark.asyncio
-async def test_oauth2_password_bearer():
-    # This would test the OAuth2PasswordBearer scheme
-    from fastapi.security import OAuth2PasswordBearer
     
-    oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-    assert oauth2_scheme.tokenUrl == "token"
-    assert oauth2_scheme.scheme_name == "OAuth2PasswordBearer"
+    # Test all fields
+    assert user_auth.username == user_data["username"]
+    assert user_auth.email == user_data["email"]
+    assert user_auth.password == user_data["password"]
+    
+    # Test model conversion to dict
+    user_dict = user_auth.model_dump()
+    assert all(user_dict[k] == v for k, v in user_data.items())
+
+def test_user_auth_model_validation():
+    """Test UserAuth model validation rules."""
+    # Test required fields
+    with pytest.raises(ValueError):
+        UserAuth()  # Should fail without required fields
+    
+    # Test invalid email
+    with pytest.raises(ValueError):
+        UserAuth(
+            username="testuser",
+            email="invalid-email",
+            password="password123"
+        )
+    
+    # Test username length
+    with pytest.raises(ValueError):
+        UserAuth(
+            username="a",  # Too short
+            email="test@example.com",
+            password="password123"
+        )
 
 @pytest.mark.asyncio
 async def test_password_hashing_performance(auth_manager):
-    # Test that password hashing takes a reasonable amount of time
-    # Too fast might indicate weak hashing, too slow would be unusable
-    import time
+    """Test that password hashing has appropriate performance characteristics.
     
-    start_time = time.time()
-    hash = auth_manager.get_password_hash("test_password")
-    end_time = time.time()
+    The test ensures that:
+    - Hashing is not too fast (which could indicate weak security)
+    - Hashing is not too slow (which would affect usability)
+    - Hashing is consistent across multiple runs
+    """
+    password = "test_password"
+    NUM_SAMPLES = 3
+    MIN_TIME = 0.05  # 50ms minimum
+    MAX_TIME = 0.5   # 500ms maximum
     
-    hashing_time = end_time - start_time
-    assert 0.01 < hashing_time < 0.5  # Should take between 10ms and 500ms
-'''
+    # Test multiple samples to ensure consistent performance
+    times = []
+    hashes = []
+    
+    for _ in range(NUM_SAMPLES):
+        start_time = time.perf_counter()  # More precise than time.time()
+        hash_result = auth_manager.get_password_hash(password)
+        end_time = time.perf_counter()
+        
+        hashing_time = end_time - start_time
+        times.append(hashing_time)
+        hashes.append(hash_result)
+    
+    avg_time = sum(times) / len(times)
+    
+    # Test performance bounds
+    assert MIN_TIME < avg_time < MAX_TIME, \
+        f"Hashing time ({avg_time:.3f}s) outside acceptable range ({MIN_TIME}-{MAX_TIME}s)"
+    
+    # Verify that each hash is different (due to random salt)
+    assert len(set(hashes)) == NUM_SAMPLES, \
+        "Multiple hashes of same password should be unique due to salt"
+    
+    # Verify that each hash can be verified
+    for hash_value in hashes:
+        assert auth_manager.verify_password(password, hash_value), \
+            "Hash verification failed"
+
+def test_oauth2_password_bearer():
+    """Test OAuth2PasswordBearer configuration."""
+    from fastapi.security import OAuth2PasswordBearer
+
+    # Just verify that we can create the scheme
+    oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+    assert isinstance(oauth2_scheme, OAuth2PasswordBearer)
+

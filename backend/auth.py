@@ -6,7 +6,7 @@ from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from jose import JWTError, jwt
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, constr
 import os
 
 from models import User 
@@ -14,14 +14,14 @@ from models import User
 # Models
 class Token(BaseModel):
     access_token: str
-    token_type: str
+    token_type: constr(pattern="^bearer$")  # Only allow "bearer"
     user_id: str
     username: str
 
 class UserAuth(BaseModel):
-    username: str
-    email: str
-    password: str
+    username: constr(min_length=3, max_length=50)
+    email: EmailStr
+    password: constr(min_length=8)
 
 # Constants
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key")
