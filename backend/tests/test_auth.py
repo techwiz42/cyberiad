@@ -134,7 +134,7 @@ async def test_authenticate_user(test_db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_get_current_user_valid_token(auth_manager, test_db_session, test_user):
     """Test that a valid token correctly returns the associated user."""
-    user = await test_user  # Await the coroutine instead of iterating
+    user = test_user
     
     # Create a valid token for the user
     token = auth_manager.create_access_token({"sub": user.username})
@@ -160,7 +160,7 @@ async def test_get_current_user_invalid_token(auth_manager, test_db_session):
 async def test_get_current_user_expired_token(auth_manager, test_db_session, test_user):
     """Test that an expired token is properly rejected."""
     # First get the test user
-    user = await test_user
+    user = test_user
     
     # Create a token that's already expired
     data = {
