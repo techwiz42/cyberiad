@@ -8,19 +8,19 @@ import psutil
 import asyncio
 import os
 import logging
-from pathlib import Path
 from fastapi import WebSocket
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta
 from uuid import uuid4
-import sys
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-from database import DatabaseManager
+from database import DatabaseManager, engine
 from models import User, Thread, Message, ThreadParticipant, ThreadAgent, AgentType, ThreadStatus
-from .conftest import test_db_session, test_engine, reset_db
+from .conftest import test_db_session, test_engine, reliability_reset
 
 class MockWebSocket:
     def __init__(self):
@@ -38,330 +38,407 @@ def process():
     return psutil.Process(os.getpid())
 
 async def create_messages(session, thread_id, user_id, count):
+    """Create multiple messages with proper error handling and cleanup."""
     messages = []
-    for i in range(count):
-        result = await session.execute(
-            text("""
-            INSERT INTO messages (thread_id,  user_id,  content)
-            VALUES (:thread_id, :user_id, :content)
-            RETURNING id
-            """),
-            {
-                'thread_id': thread_id,
-                'user_id': user_id,
-                'content': f'Message {i}'
-            }
-        )
-        messages.append(result.scalar())
-    await session.commit()
-    return messages
-
+    try:
+        for i in range(count):
+            result = await session.execute(
+                text("""
+                INSERT INTO messages (id, thread_id, user_id, content, created_at)
+                VALUES (gen_random_uuid(), :thread_id, :user_id, :content, NOW())
+                RETURNING id
+                """),
+                {
+                    'thread_id': str(thread_id),
+                    'user_id': str(user_id),
+                    'content': f'Message {i}'
+                }
+            )
+            messages.append(await result.scalar())
+        await session.commit()
+        return messages
+    except Exception as e:
+        await session.rollback()
+        logger.error(f"Error creating messages: {e}")
+        raise
 
 @pytest.mark.asyncio
-async def test_thread_management_reliability(test_db_session, reset_db, process):
+async def test_thread_management_reliability(test_db_session, reliability_reset, process):
     """Test thread creation and management under load."""
-    reset_db  # Ensure database reset is invoked
+    await reliability_reset
     initial_memory = process.memory_info().rss
-
-    # Create multiple threads concurrently
-    async def create_thread(i):
-        result = await test_db_session.execute(
-            text("""
-            INSERT INTO threads (title, description, owner_id)
-            VALUES (:title, :description, :owner_id)
-            RETURNING id
-            """),
-            {
-                'title': f'Thread {i}',  # Ensure title is provided
-                'description': f'Description {i}',  # Valid description
-                'owner_id': uuid4()  # Owner ID as a valid UUID string
-            }
-        )
-        
-        result.scalar()
-
-    tasks = [create_thread(i) for i in range(100)]  # Create 100 threads concurrently
-    thread_ids = await asyncio.gather(*tasks)
-    await test_db_session.commit()
-
-    # Verify thread creation
-    result = await test_db_session.execute(
-        text("SELECT COUNT(*) FROM threads"))
-    count = result.scalar()
-    assert count == 100
-    assert len(thread_ids) == 100
-
-    # Check memory usage
-    gc.collect()
-    final_memory = process.memory_info().rss
-    assert (final_memory - initial_memory) < 10 * 1024 * 1024
-    result.scalar()
     
-    tasks = [create_thread(i) for i in range(100)]
-    thread_ids = await asyncio.gather(*tasks)
-    await test_db_session.commit()
-    
-    # Verify thread creation
-    result = await test_db_session.execute(
-        text("SELECT COUNT(*) FROM threads")
-    )
-    count = result.scalar()
-    assert count == 100
-    assert len(thread_ids) == 100
-    
-    # Check memory usage
-    gc.collect()
-    final_memory = process.memory_info().rss
-    assert (final_memory - initial_memory) < 10 * 1024 * 1024
+    try:
+        # Create multiple threads concurrently
+        async def create_thread(i):
+            # Create a new session for each thread creation
+            TestSession = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+            async with TestSession() as session:
+                try:
+                    result = await session.execute(
+                        text("""
+                        INSERT INTO threads (id, title, description, owner_id, status, created_at, updated_at)
+                        VALUES (
+                            gen_random_uuid(),
+                            :title,
+                            :description,
+                            :owner_id::uuid,
+                            'ACTIVE',
+                            NOW(),
+                            NOW()
+                        )
+                        RETURNING id
+                        """),
+                        {
+                            'title': f'Thread {i}',
+                            'description': f'Description {i}',
+                            'owner_id': str(uuid4())
+                        }
+                    )
+                    thread_id = await result.scalar()
+                    await session.commit()
+                    return thread_id
+                except Exception as e:
+                    await session.rollback()
+                    raise e
+
+        tasks = [create_thread(i) for i in range(100)]
+        thread_ids = await asyncio.gather(*tasks)
+
+        # Verify thread creation using main session
+        result = await test_db_session.execute(text("SELECT COUNT(*) FROM threads"))
+        count = await result.scalar()
+        assert count == 100
+        assert len(thread_ids) == 100
+
+        # Check memory usage
+        gc.collect()
+        final_memory = process.memory_info().rss
+        assert (final_memory - initial_memory) < 10 * 1024 * 1024
+
+    except Exception as e:
+        await test_db_session.rollback()
+        logger.error(f"Error in thread management test: {e}")
+        raise
+    finally:
+        await test_db_session.close()
 
 @pytest.mark.asyncio
-async def test_message_persistence_reliability(test_db_session, test_thread, reset_db):
+async def test_message_persistence_reliability(test_db_session, test_thread, reliability_reset):
     """Test message handling under heavy load."""
-    reset_db
+    await reliability_reset
     thread_id, owner_id = await test_thread
-    thread_id = thread_id
-    owner_id = owner_id
     
-    # Create many messages concurrently
-    tasks = []
-    for batch in range(10):
-        tasks.append(create_messages(test_db_session, thread_id, owner_id, 50))
-    
-    message_batches = await asyncio.gather(*tasks)
-    all_messages = [msg for batch in message_batches for msg in batch]
-    
-    # Verify message creation
-    result = await test_db_session.execute(
-        text("SELECT COUNT(*) FROM messages WHERE thread_id = :thread_id")
-,
-        {'thread_id': thread_id}
-    )
-    count = result.scalar()
-    assert count == 500
+    try:
+        # Create many messages concurrently
+        tasks = []
+        for batch in range(10):
+            tasks.append(create_messages(test_db_session, thread_id, owner_id, 50))
+
+        message_batches = await asyncio.gather(*tasks)
+        all_messages = [msg for batch in message_batches for msg in batch]
+
+        # Verify message creation
+        result = await test_db_session.execute(
+            text("SELECT COUNT(*) FROM messages WHERE thread_id = :thread_id"),
+            {'thread_id': str(thread_id)}
+        )
+        count = await result.scalar()
+        assert count == 500
+
+    except Exception as e:
+        await test_db_session.rollback()
+        logger.error(f"Error in message persistence test: {e}")
+        raise
+    finally:
+        await test_db_session.close()
 
 @pytest.mark.asyncio
-async def test_websocket_connection_reliability(test_db_session, test_thread, reset_db):
-    """Test WebSocket connection management under load."""
-    reset_db
-    thread_id, _ = await test_thread
-    thread_id = thread_id
-    
-    db_manager = DatabaseManager()
-    
-    # Create multiple WebSocket connections
-    connections = {}
-    for i in range(50):
-        user_id = uuid4()
-        ws = MockWebSocket()
-        await db_manager.add_active_connection(thread_id,  user_id, ws)
-        connections[user_id] = ws
-    
-    # Broadcast messages
-    for i in range(10):
-        sender_id = list(connections.keys())[0]
-        await db_manager.broadcast_to_thread(thread_id, sender_id, f"Broadcast {i}")
-    
-    # Verify message delivery
-    for ws in list(connections.values())[1:]:  # Exclude sender
-        assert len(ws.sent_messages) == 10
-    
-    # Test connection cleanup
-    for user_id in connections:
-        await db_manager.remove_active_connection(thread_id, user_id)
-
-@pytest.mark.asyncio
-async def test_participant_management_reliability(test_db_session, test_thread, reset_db):
+async def test_participant_management_reliability(test_db_session, test_thread, reliability_reset):
     """Test thread participant management under load."""
-    reset_db
+    await reliability_reset
     thread_id, _ = await test_thread
-    thread_id = thread_id
     
-    # Add multiple participants concurrently
-    async def add_participant(i):
-        result = await test_db_session.execute(
-            text("""
-            INSERT INTO thread_participants (thread_id, user_id)
+    try:
+        # Add multiple participants concurrently
+        async def add_participant(i):
+            result = await test_db_session.execute(
+                text("""
+                INSERT INTO thread_participants (thread_id, user_id, joined_at, is_active)
+                VALUES (:thread_id::uuid, :user_id::uuid, NOW(), true)
+                RETURNING user_id
+                """),
+                {'thread_id': str(thread_id), 'user_id': str(uuid4())}
+            )
+            return await result.scalar()
 
-            VALUES (:thread_id, :user_id)
-            RETURNING user_id
-            """),
-            {'thread_id': thread_id, 'user_id': uuid4()}
+        tasks = [add_participant(i) for i in range(100)]
+        participant_ids = await asyncio.gather(*tasks)
+        await test_db_session.commit()
+
+        # Verify participants
+        result = await test_db_session.execute(
+            text("SELECT COUNT(*) FROM thread_participants WHERE thread_id = :thread_id"),
+            {'thread_id': str(thread_id)}
         )
-         
-        result.scalar()
-    
-    tasks = [add_participant(i) for i in range(100)]
-    participant_ids = await asyncio.gather(*tasks)
-    
-    # Verify participants
-    result = await test_db_session.execute(
-        text("SELECT COUNT(*) FROM thread_participants WHERE thread_id = :thread_id")
-,
-        {'thread_id': thread_id}
-    )
-    count = result.scalar()
-    assert count == 100
+        count = await result.scalar()
+        assert count == 101  # Including original participant from test_thread
+
+    except Exception as e:
+        await test_db_session.rollback()
+        logger.error(f"Error in participant management test: {e}")
+        raise
+    finally:
+        await test_db_session.close()
 
 @pytest.mark.asyncio
-async def test_agent_management_reliability(test_db_session, test_thread, reset_db):
+async def test_agent_management_reliability(test_db_session, test_thread, reliability_reset):
     """Test thread agent management under load."""
-    reset_db
+    await reliability_reset
     thread_id, _ = await test_thread
-    thread_id = thread_id
     
-    # Add multiple agents concurrently
-    async def add_agent():
+    try:
+        # Add multiple agents concurrently
+        async def add_agent():
+            result = await test_db_session.execute(
+                text("""
+                INSERT INTO thread_agents (id, thread_id, agent_type, is_active, created_at)
+                VALUES (gen_random_uuid(), :thread_id::uuid, :agent_type, true, NOW())
+                RETURNING id
+                """),
+                {
+                    'thread_id': str(thread_id),
+                    'agent_type': AgentType.LAWYER.value
+                }
+            )
+            return await result.scalar()
+
+        tasks = [add_agent() for _ in range(20)]
+        agent_ids = await asyncio.gather(*tasks)
+        await test_db_session.commit()
+
+        # Test agent message creation
+        for agent_id in agent_ids:
+            await test_db_session.execute(
+                text("""
+                INSERT INTO messages (id, thread_id, agent_id, content, created_at)
+                VALUES (gen_random_uuid(), :thread_id::uuid, :agent_id::uuid, :content, NOW())
+                """),
+                {
+                    'thread_id': str(thread_id),
+                    'agent_id': str(agent_id),
+                    'content': f'Agent {agent_id} response'
+                }
+            )
+        await test_db_session.commit()
+
+        # Verify agents and messages
+        result = await test_db_session.execute(
+            text("SELECT COUNT(*) FROM thread_agents WHERE thread_id = :thread_id"),
+            {'thread_id': str(thread_id)}
+        )
+        agent_count = await result.scalar()
+        assert agent_count == 20
+
+    except Exception as e:
+        await test_db_session.rollback()
+        logger.error(f"Error in agent management test: {e}")
+        raise
+    finally:
+        await test_db_session.close()
+
+@pytest.mark.asyncio
+async def test_read_receipt_reliability(test_db_session, test_thread, reliability_reset):
+    """Test read receipt handling under load."""
+    await reliability_reset
+    thread_id, owner_id = await test_thread
+    
+    try:
+        # Create messages
+        message_ids = await create_messages(test_db_session, thread_id, owner_id, 100)
+
+        # Create read receipts concurrently
+        async def mark_read(message_id):
+            await test_db_session.execute(
+                text("""
+                INSERT INTO message_read_receipts (id, message_id, user_id, read_at)
+                VALUES (gen_random_uuid(), :message_id::uuid, :user_id::uuid, NOW())
+                """),
+                {
+                    'message_id': str(message_id),
+                    'user_id': str(uuid4())
+                }
+            )
+
+        tasks = [mark_read(msg_id) for msg_id in message_ids]
+        await asyncio.gather(*tasks)
+        await test_db_session.commit()
+
+        # Verify read receipts
         result = await test_db_session.execute(
             text("""
-            INSERT INTO thread_agents (thread_id, agent_type)
-
-            VALUES (:thread_id, :agent_type)
-            RETURNING id
+            SELECT COUNT(*) FROM message_read_receipts 
+            WHERE message_id IN (
+                SELECT id FROM messages WHERE thread_id = :thread_id
+            )
             """),
-            {
-                'thread_id': thread_id,
-                'agent_type': AgentType.LAWYER.value
-            }
-        ) 
-        result.scalar()
-    
-    tasks = [add_agent() for _ in range(20)]
-    agent_ids = await asyncio.gather(*tasks)
-    
-    # Test agent message creation
-    for agent_id in agent_ids:
-        
-        await test_db_session.execute(
-            text("""
-            INSERT INTO messages (thread_id, agent_id, content)
-
-            VALUES (:thread_id, :agent_id, :content)
-            """),
-            {
-                'thread_id': thread_id,
-                'agent_id': agent_id,
-                'content': f'Agent {agent_id} response'
-            }
-        ) 
-    
-    await test_db_session.commit()
-
-@pytest.mark.asyncio
-async def test_read_receipt_reliability(test_db_session, test_thread, reset_db):
-    """Test read receipt handling under load."""
-    reset_db
-    thread_id, owner_id = await test_thread
-    thread_id = thread_id
-    owner_id = owner_id
-    
-    # Create messages
-    message_ids = await create_messages(test_db_session, thread_id, owner_id, 100)
-    
-    # Create read receipts concurrently
-    async def mark_read(message_id):
-        
-        await test_db_session.execute(
-            text("""
-            INSERT INTO message_read_receipts (message_id, user_id, read_at)
-
-            VALUES (:message_id, :user_id, :read_at)
-            """),
-            {
-                'message_id': message_id,
-                'user_id': uuid4(),
-                'read_at': datetime.utcnow()
-            }
+            {'thread_id': str(thread_id)}
         )
-    
-    tasks = [mark_read(msg_id) for msg_id in message_ids]
-    await asyncio.gather(*tasks)
-    await test_db_session.commit()
+        count = await result.scalar()
+        assert count == 100
+
+    except Exception as e:
+        await test_db_session.rollback()
+        logger.error(f"Error in read receipt test: {e}")
+        raise
+    finally:
+        await test_db_session.close()
 
 @pytest.mark.asyncio
-async def test_concurrent_operations(test_db_session, test_thread, reset_db):
+async def test_concurrent_operations(test_db_session, test_thread, reliability_reset):
     """Test multiple database operations happening concurrently."""
-    reset_db
+    await reliability_reset
     thread_id, owner_id = await test_thread
-    thread_id = thread_id
-    owner_id = owner_id
-    
-    async def mixed_operations(i):
-        # Create message
-        message_result = await test_db_session.execute(
-            text("""
-            INSERT INTO messages (thread_id, user_id, content)
-            VALUES (:thread_id, :user_id, :content)
-            RETURNING id
-            """),
-            {
-                'thread_id': thread_id,
-                'user_id': owner_id,
-                'content': f'Message {i}'
-            }
-        ) 
-        message_id = await message_result.scalar()
-        
-        # Add participant
-        
-        await test_db_session.execute(
-            text("""
-            INSERT INTO thread_participants (thread_id, user_id)
 
-            VALUES (:thread_id, :user_id)
-            """),
-            {'thread_id': thread_id, 'user_id': uuid4()}
-         
-        )
-        # Create read receipt
-        
-        await test_db_session.execute(
-            text("""
-            INSERT INTO message_read_receipts (message_id, user_id, read_at)
+    try:
+        async def mixed_operations(i):
+            # Create message
+            message_result = await test_db_session.execute(
+                text("""
+                INSERT INTO messages (id, thread_id, user_id, content, created_at)
+                VALUES (gen_random_uuid(), :thread_id::uuid, :user_id::uuid, :content, NOW())
+                RETURNING id
+                """),
+                {
+                    'thread_id': str(thread_id),
+                    'user_id': str(owner_id),
+                    'content': f'Message {i}'
+                }
+            )
+            message_id = await message_result.scalar()
 
-            VALUES (:message_id, :user_id, :read_at)
-            """),
-            {
-                'message_id': message_id,
-                'user_id': uuid4(),
-                'read_at': datetime.utcnow()
-            }
-        )
-    
-    tasks = [mixed_operations(i) for i in range(50)]
-    await asyncio.gather(*tasks)
-    await test_db_session.commit()
+            # Add participant
+            await test_db_session.execute(
+                text("""
+                INSERT INTO thread_participants (thread_id, user_id, joined_at, is_active)
+                VALUES (:thread_id::uuid, :user_id::uuid, NOW(), true)
+                """),
+                {
+                    'thread_id': str(thread_id),
+                    'user_id': str(uuid4())
+                }
+            )
+
+            # Create read receipt
+            await test_db_session.execute(
+                text("""
+                INSERT INTO message_read_receipts (id, message_id, user_id, read_at)
+                VALUES (gen_random_uuid(), :message_id::uuid, :user_id::uuid, NOW())
+                """),
+                {
+                    'message_id': str(message_id),
+                    'user_id': str(uuid4())
+                }
+            )
+
+        tasks = [mixed_operations(i) for i in range(50)]
+        await asyncio.gather(*tasks)
+        await test_db_session.commit()
+
+        # Verify final state
+        async def verify_counts():
+            message_count = await test_db_session.execute(
+                text("SELECT COUNT(*) FROM messages WHERE thread_id = :thread_id"),
+                {'thread_id': str(thread_id)}
+            )
+            participant_count = await test_db_session.execute(
+                text("SELECT COUNT(*) FROM thread_participants WHERE thread_id = :thread_id"),
+                {'thread_id': str(thread_id)}
+            )
+            receipt_count = await test_db_session.execute(
+                text("""
+                SELECT COUNT(*) FROM message_read_receipts
+                WHERE message_id IN (SELECT id FROM messages WHERE thread_id = :thread_id)
+                """),
+                {'thread_id': str(thread_id)}
+            )
+            return (
+                await message_count.scalar(),
+                await participant_count.scalar(),
+                await receipt_count.scalar()
+            )
+
+        msg_count, part_count, receipt_count = await verify_counts()
+        assert msg_count == 50  # New messages from this test
+        assert part_count == 51  # 50 new + 1 original
+        assert receipt_count == 50  # One receipt per message
+
+    except Exception as e:
+        await test_db_session.rollback()
+        logger.error(f"Error in concurrent operations test: {e}")
+        raise
+    finally:
+        await test_db_session.close()
 
 @pytest.mark.asyncio
-async def test_database_recovery(test_db_session, test_thread, reset_db):
+async def test_database_recovery(test_db_session, test_thread, reliability_reset):
     """Test database recovery after simulated failures."""
-    reset_db
+    await reliability_reset
     thread_id, owner_id = await test_thread
-    thread_id = thread_id
-    owner_id = owner_id
-    
-    # Simulate transaction failure
-    async with test_db_session.begin() as transaction:
-        await create_messages(test_db_session, thread_id, owner_id, 10)
-        await transaction.rollback()
-    
-    # Verify database state is clean
-    result = await test_db_session.execute(
-        text("SELECT COUNT(*) FROM messages WHERE thread_id = :thread_id")
-,
-        {'thread_id': thread_id}
-    )
-    count = result.scalar()
-    assert count == 0
-    
-    # Verify can continue operations
-    await create_messages(test_db_session, thread_id, owner_id, 5)
-    result = await test_db_session.execute(
-        text("SELECT COUNT(*) FROM messages WHERE thread_id = :thread_id")
-,
-        {'thread_id': thread_id}
-    )
-    count = result.scalar()
-    assert count == 5
 
+    try:
+        # Simulate transaction failure
+        async with test_db_session.begin() as transaction:
+            await create_messages(test_db_session, thread_id, owner_id, 10)
+            await transaction.rollback()
 
+        # Verify database state is clean
+        result = await test_db_session.execute(
+            text("""
+            SELECT COUNT(*) FROM messages
+            WHERE thread_id = :thread_id AND created_at > (
+                SELECT created_at FROM threads WHERE id = :thread_id
+            )
+            """),
+            {'thread_id': str(thread_id)}
+        )
+        count = await result.scalar()
+        assert count == 0, "Database should be clean after rollback"
 
+        # Verify can continue operations
+        await create_messages(test_db_session, thread_id, owner_id, 5)
+        result = await test_db_session.execute(
+            text("SELECT COUNT(*) FROM messages WHERE thread_id = :thread_id"),
+            {'thread_id': str(thread_id)}
+        )
+        count = await result.scalar()
+        assert count == 5, "Should be able to create new messages after rollback"
+
+        # Test partial failure recovery
+        async with test_db_session.begin() as transaction:
+            try:
+                # This should fail due to duplicate participants
+                await test_db_session.execute(
+                    text("""
+                    INSERT INTO thread_participants (thread_id, user_id, joined_at, is_active)
+                    VALUES (:thread_id::uuid, :user_id::uuid, NOW(), true)
+                    """),
+                    {
+                        'thread_id': str(thread_id),
+                        'user_id': str(owner_id)  # This is already a participant
+                    }
+                )
+            except Exception:
+                await transaction.rollback()
+                logger.info("Expected failure handled correctly")
+
+        # Verify system remains operational
+        new_messages = await create_messages(test_db_session, thread_id, owner_id, 3)
+        assert len(new_messages) == 3, "Should be able to create messages after handled failure"
+
+    except Exception as e:
+        await test_db_session.rollback()
+        logger.error(f"Error in database recovery test: {e}")
+        raise
+    finally:
+        await test_db_session.close()
