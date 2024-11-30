@@ -7,8 +7,12 @@ import time
 import jwt
 from datetime import datetime, timedelta
 import logging
+import os
 
 logger = logging.getLogger(__name__)
+
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM")
 
 # Rate limiting setup
 limiter = Limiter(key_func=get_remote_address)
@@ -87,7 +91,7 @@ class JWTBearer(HTTPBearer):
                 status_code=403,
                 detail="Token has expired."
             )
-        except jwt.JWTError:
+        except jwt.PyJWTError:
             raise HTTPException(
                 status_code=403,
                 detail="Invalid token."

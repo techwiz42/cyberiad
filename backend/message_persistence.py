@@ -95,6 +95,40 @@ class MessagePersistenceManager:
                 detail=f"Error retrieving messages: {str(e)}"
             )
 
+    async def create_message(
+        self,
+        content: str,
+        user_id: UUID,
+        thread_id: UUID,
+        message_metadata: dict = None,
+    ) -> Message:
+        """
+        Create a new message and save it to the database.
+        """
+        try:
+            if message_metadata is None:
+                message_metadata = {}
+
+            new_message = Message(
+                content=content,
+                user_id=user_id,
+                thread_id=thread_id,
+                created_at=datetime.now(timezone.utc),
+                message_metadata=message_metadata,
+            )
+
+            self.db.add(new_message)
+            await self.db.commit()
+            await self.db.refresh(new_message)
+            return new_message
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(f"Error creating message: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error creating message: {str(e)}"
+            )
+
     async def update_message(
         self,
         message_id: UUID,
@@ -231,6 +265,7 @@ class MessagePersistenceManager:
                 status_code=500,
                 detail=f"Error retrieving message: {str(e)}"
             )
+
 
     async def get_unread_count(self, thread_id: UUID, user_id: UUID) -> int:
         """

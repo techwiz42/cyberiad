@@ -42,37 +42,16 @@ class ConnectionManager:
             logger.error(f"Error connecting WebSocket: {e}")
             raise
 
-    async def disconnect(self, thread_id: UUID, user_id: UUID):
-        """Handle WebSocket disconnection."""
-        try:
-            if thread_id in self.active_connections:
-                self.active_connections[thread_id].pop(user_id, None)
+    async def disconnect(self, user_id: UUID, thread_id: UUID):
+        """Disconnect a user from a thread."""
+        if thread_id in self.active_connections:
+            if user_id in self.active_connections[thread_id]:
+                del self.active_connections[thread_id][user_id]
+            
+                # If the thread is empty, remove it
                 if not self.active_connections[thread_id]:
                     del self.active_connections[thread_id]
-            
-            if user_id in self.user_threads:
-                self.user_threads[user_id].discard(thread_id)
-                if not self.user_threads[user_id]:
-                    del self.user_threads[user_id]
-            
-            connection_key = f"{thread_id}:{user_id}"
-            self.connection_timestamps.pop(connection_key, None)
-            
-            # Clean up typing status
-            if thread_id in self.typing_status:
-                self.typing_status[thread_id].pop(user_id, None)
-                if not self.typing_status[thread_id]:
-                    del self.typing_status[thread_id]
-            
-            # Broadcast user left message
-            await self.broadcast(thread_id, {
-                "type": "user_left",
-                "user_id": str(user_id),
-                "timestamp": datetime.utcnow().isoformat()
-            })
-            
-        except Exception as e:
-            logger.error(f"Error disconnecting WebSocket: {e}")
+
 
     async def broadcast(self, thread_id: UUID, message: dict, exclude_user: Optional[UUID] = None):
         """Broadcast message to all thread participants."""

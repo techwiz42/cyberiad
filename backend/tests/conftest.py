@@ -22,6 +22,18 @@ DB_NAME = os.getenv('TEST_DB_NAME', 'cyberiad_test')
 POSTGRES_URL = f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/postgres"
 TEST_DATABASE_URL = f"postgresql+asyncpg://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
 
+@pytest.fixture
+def mock_message(mock_user):
+    """Fixture to provide a mock message for tests."""
+    return Message(
+        id=uuid4(),
+        content="Test message",
+        created_at=datetime.now(timezone.utc),  # Timezone-aware
+        user_id=mock_user.id,
+        thread_id=uuid4(),
+        message_metadata={}
+    )
+
 async def create_test_database():
     """Create the test database and tables."""
     print(f"Creating test database {DB_NAME}...")  # Debug print

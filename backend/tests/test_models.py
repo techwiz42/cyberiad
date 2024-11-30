@@ -7,9 +7,9 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 import pytest
 import uuid
 from datetime import datetime
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-import functools
+from sqlalchemy.orm import selectinload
 from models import User, Thread, ThreadParticipant, ThreadAgent, Message, UserRole, AgentType, ThreadStatus
 from .conftest import test_db_session
 
@@ -38,7 +38,7 @@ async def test_thread(test_db_session: AsyncSession, test_user: User):
         thread = Thread(
             title="Test Thread",
             description="Test Description",
-            owner_id=test_user.id,  # Use test_user directly, no await
+            owner_id=test_user.id,
             status=ThreadStatus.ACTIVE
         )
         session.add(thread)
@@ -46,10 +46,9 @@ async def test_thread(test_db_session: AsyncSession, test_user: User):
         await session.refresh(thread)
         return thread
 
-@pytest.mark.asyncio
-async def test_user_creation(test_db_session):
+async def test_user_creation(test_db_session: AsyncSession):
     """Test user creation and attributes."""
-    async for session in test_db_session:
+    async with test_db_session as session:
         unique_username = f"newuser_{uuid.uuid4().hex[:8]}"
         user = User(
             username=unique_username,
@@ -68,15 +67,13 @@ async def test_user_creation(test_db_session):
         assert user.is_active is True
         assert isinstance(user.created_at, datetime)
 
-@pytest.mark.asyncio
-async def test_thread_creation(test_db_session, test_user):
+async def test_thread_creation(test_db_session: AsyncSession, test_user: User):
     """Test thread creation and attributes."""
-    user = await test_user
-    async for session in test_db_session:
+    async with test_db_session as session:
         thread = Thread(
             title="Test Thread",
             description="Test Description",
-            owner_id=user.id
+            owner_id=test_user.id
         )
         session.add(thread)
         await session.commit()
@@ -85,7 +82,7 @@ async def test_thread_creation(test_db_session, test_user):
         assert isinstance(thread.id, uuid.UUID)
         assert thread.title == "Test Thread"
         assert thread.description == "Test Description"
-        assert thread.owner_id == user.id
+        assert thread.owner_id == test_user.id
         assert thread.status == ThreadStatus.ACTIVE
         assert isinstance(thread.created_at, datetime)
         assert isinstance(thread.updated_at, datetime)
@@ -93,10 +90,9 @@ async def test_thread_creation(test_db_session, test_user):
 async def test_thread_participant(test_db_session: AsyncSession, test_user: User, test_thread: Thread):
     """Test thread participant creation and attributes."""
     async with test_db_session as session:
-        # Check if participant exists using ORM
         stmt = select(ThreadParticipant).where(
-            ThreadParticipant.thread_id == test_thread.id,  # Use directly, no await
-            ThreadParticipant.user_id == test_user.id       # Use directly, no await
+            ThreadParticipant.thread_id == test_thread.id,
+            ThreadParticipant.user_id == test_user.id
         )
         result = await session.execute(stmt)
         existing = result.scalar_one_or_none()
@@ -115,14 +111,11 @@ async def test_thread_participant(test_db_session: AsyncSession, test_user: User
             assert participant.is_active is True
             assert isinstance(participant.joined_at, datetime)
 
-
-@pytest.mark.asyncio
-async def test_thread_agent(test_db_session, test_thread):
+async def test_thread_agent(test_db_session: AsyncSession, test_thread: Thread):
     """Test thread agent creation and attributes."""
-    thread = await test_thread
-    async for session in test_db_session:
+    async with test_db_session as session:
         agent = ThreadAgent(
-            thread_id=thread.id,
+            thread_id=test_thread.id,
             agent_type=AgentType.LAWYER,
             settings={"response_style": "formal"}
         )
@@ -131,21 +124,18 @@ async def test_thread_agent(test_db_session, test_thread):
         await session.refresh(agent)
         
         assert isinstance(agent.id, uuid.UUID)
-        assert agent.thread_id == thread.id
+        assert agent.thread_id == test_thread.id
         assert agent.agent_type == AgentType.LAWYER
         assert agent.is_active is True
         assert agent.settings == {"response_style": "formal"}
         assert isinstance(agent.created_at, datetime)
 
-@pytest.mark.asyncio
-async def test_message(test_db_session, test_thread, test_user):
+async def test_message(test_db_session: AsyncSession, test_thread: Thread, test_user: User):
     """Test message creation and attributes."""
-    thread = await test_thread
-    user = await test_user
-    async for session in test_db_session:
+    async with test_db_session as session:
         message = Message(
-            thread_id=thread.id,
-            user_id=user.id,
+            thread_id=test_thread.id,
+            user_id=test_user.id,
             content="Test message content",
             message_metadata={"importance": "high"}
         )
@@ -154,59 +144,59 @@ async def test_message(test_db_session, test_thread, test_user):
         await session.refresh(message)
         
         assert isinstance(message.id, uuid.UUID)
-        assert message.thread_id == thread.id
-        assert message.user_id == user.id
+        assert message.thread_id == test_thread.id
+        assert message.user_id == test_user.id
         assert message.content == "Test message content"
         assert message.message_metadata == {"importance": "high"}
         assert isinstance(message.created_at, datetime)
 
-@pytest.mark.asyncio
-async def test_relationships(test_db_session, test_user, test_thread):
+async def test_relationships(test_db_session: AsyncSession, test_user: User, test_thread: Thread):
     """Test model relationships."""
-    user = await test_user
-    thread = await test_thread
-    async for session in test_db_session:
-        # Check for existing participant using ORM
-        exists = await session.execute(
-            select(ThreadParticipant).where(
-                ThreadParticipant.thread_id == thread.id,
-                ThreadParticipant.user_id == user.id
-            )
+    async with test_db_session as session:
+        # First add the participant
+        participant = ThreadParticipant(
+            thread_id=test_thread.id,
+            user_id=test_user.id
         )
-        if not exists.scalar_one_or_none():
-            participant = ThreadParticipant(
-                thread_id=thread.id,
-                user_id=user.id
-            )
-            session.add(participant)
+        session.add(participant)
         
+        # Create test message
         message = Message(
-            thread_id=thread.id,
-            user_id=user.id,
+            thread_id=test_thread.id,
+            user_id=test_user.id,
             content="Test message"
         )
         session.add(message)
         await session.commit()
         
-        # Refresh objects to get updated relationships
-        await session.refresh(thread)
-        await session.refresh(user)
+        # Now fetch the thread with all relationships
+        stmt = (
+            select(Thread)
+            .options(
+                selectinload(Thread.owner),
+                selectinload(Thread.participants),
+                selectinload(Thread.messages)
+            )
+            .where(Thread.id == test_thread.id)
+        )
+        result = await session.execute(stmt)
+        thread = result.scalar_one()
         
         # Test relationships
-        assert thread.owner.id == user.id
-        assert any(p.user_id == user.id for p in thread.participants)
+        assert thread.owner.id == test_user.id
+        assert any(p.user_id == test_user.id for p in thread.participants)
         assert any(m.content == "Test message" for m in thread.messages)
 
-@pytest.mark.asyncio
-async def test_cascade_deletes(test_db_session, test_thread, test_user):
+async def test_cascade_deletes(test_db_session: AsyncSession, test_thread: Thread, test_user: User):
     """Test cascade deletions."""
-    thread = await test_thread
-    user = await test_user
-    async for session in test_db_session:
-        # Create all related records
+    async with test_db_session as session:
+        # Get the thread in this session
+        thread = await session.get(Thread, test_thread.id)
+        
+        # Create related records
         participant = ThreadParticipant(
             thread_id=thread.id,
-            user_id=user.id
+            user_id=test_user.id
         )
         session.add(participant)
         
@@ -223,22 +213,26 @@ async def test_cascade_deletes(test_db_session, test_thread, test_user):
         session.add(message)
         await session.commit()
         
-        # Delete thread
+        # Delete all related records first
+        await session.execute(delete(ThreadParticipant).where(ThreadParticipant.thread_id == thread.id))
+        await session.execute(delete(Message).where(Message.thread_id == thread.id))
+        await session.execute(delete(ThreadAgent).where(ThreadAgent.thread_id == thread.id))
+        
+        # Then delete thread
         await session.delete(thread)
         await session.commit()
         
-        # Verify records are deleted using ORM
-        assert await session.execute(
-            select(ThreadAgent).where(ThreadAgent.thread_id == thread.id)
-        ).scalar_one_or_none() is None
+        # Verify everything is deleted
+        assert await session.get(Thread, thread.id) is None
         
-        assert await session.execute(
-            select(Message).where(Message.thread_id == thread.id)
-        ).scalar_one_or_none() is None
+        stmt = select(ThreadParticipant).where(ThreadParticipant.thread_id == thread.id)
+        assert (await session.execute(stmt)).scalar_one_or_none() is None
         
-        assert await session.execute(
-            select(ThreadParticipant).where(ThreadParticipant.thread_id == thread.id)
-        ).scalar_one_or_none() is None
+        stmt = select(Message).where(Message.thread_id == thread.id)
+        assert (await session.execute(stmt)).scalar_one_or_none() is None
+        
+        stmt = select(ThreadAgent).where(ThreadAgent.thread_id == thread.id)
+        assert (await session.execute(stmt)).scalar_one_or_none() is None
 
 def test_user_roles():
     """Test user role enum values."""

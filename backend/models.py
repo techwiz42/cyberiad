@@ -112,6 +112,7 @@ class ThreadAgent(Base):
 class Message(Base):
     __tablename__ = "messages"
 
+    
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     thread_id = Column(UUID, ForeignKey("threads.id"))
     user_id = Column(UUID, ForeignKey("users.id"), nullable=True)
@@ -125,7 +126,7 @@ class Message(Base):
     deleted = Column(Boolean, default=False)
     deleted_at = Column(DateTime, nullable=True)
     client_generated_id = Column(String, nullable=True)
-    
+
     # Relationships
     thread = relationship("Thread", back_populates="messages")
     user = relationship("User")

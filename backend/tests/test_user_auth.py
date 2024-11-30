@@ -15,7 +15,7 @@ from .conftest import test_db_session
 @pytest.mark.asyncio
 async def test_authenticate_user(test_db_session: AsyncSession):
     """Test user authentication with database."""
-    async for session in test_db_session:
+    async with test_db_session as session:
         auth_manager = AuthManager()
         
         # Create test user
@@ -50,7 +50,7 @@ async def test_authenticate_user(test_db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_register_user(test_db_session: AsyncSession):
     """Test user registration."""
-    async for session in test_db_session:
+    async with test_db_session as session:
         auth_manager = AuthManager()
         
         # Create user

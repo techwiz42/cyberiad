@@ -1,8 +1,17 @@
 # tests/test_security.py
+import os
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parent / "backend"))
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+import json
 import pytest
 from fastapi import Request, HTTPException
 from datetime import datetime, timedelta
 import jwt
+from unittest.mock import Mock
+import asyncio
+
 from security_manager import (
     SecurityManager, 
     RateLimitExceeded, 
@@ -10,6 +19,9 @@ from security_manager import (
     rate_limit,
     security_manager
 )
+
+JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
+JWT_ALGORITHM = os.getenv("JWT_ALGORITHM")
 
 class MockRequest:
     def __init__(self, client_host="127.0.0.1", path="/test"):
@@ -92,38 +104,64 @@ async def test_failed_attempts_tracking(security_mgr, mock_request):
     assert mock_request.client.host in security_mgr.blocked_ips
     assert mock_request.client.host not in security_mgr.failed_attempts
 
-def test_jwt_bearer():
-    jwt_bearer = JWTBearer()
-    
-    # Test valid token
-    valid_payload = {"sub": "test_user", "exp": datetime.utcnow() + timedelta(hours=1)}
-    valid_token = jwt.encode(valid_payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
-    
-    credentials = Mock(scheme="Bearer", credentials=valid_token)
-    result = await jwt_bearer(credentials)
-    assert result == valid_payload
+@pytest.mark.asyncio
+async def test_jwt_bearer():
+    # Create a valid JWT tokeni
+    print(f"JWT_SECRET_KEY={JWT_SECRET_KEY}")
+    payload = {
+        "sub": "user_id",
+        "exp": int((datetime.utcnow() + timedelta(minutes=1)).timestamp())  # UNIX timestamp
+    }
+    token = jwt.encode(payload, JWT_SECRET_KEY , algorithm=JWT_ALGORITHM)
 
-def test_jwt_bearer_invalid_scheme():
     jwt_bearer = JWTBearer()
-    
-    credentials = Mock(scheme="Basic", credentials="invalid_token")
-    with pytest.raises(HTTPException) as exc:
-        await jwt_bearer(credentials)
-    assert exc.value.status_code == 403
-    assert "Invalid authentication scheme" in str(exc.value.detail)
 
-def test_jwt_bearer_expired_token():
+    # Mock a FastAPI request with the Authorization header
+    mock_request = Mock()
+    mock_request.headers = {"Authorization": f"Bearer {token}"}
+
+    # Ensure the bearer logic unpacks and validates the token correctly
+    result = await jwt_bearer(mock_request)
+    assert result["sub"] == payload["sub"] 
+
+@pytest.mark.asyncio
+async def test_jwt_bearer_invalid_scheme():
+    # Create a token but simulate an invalid scheme (e.g., "Token" instead of "Bearer")
+    payload = {"sub": "user_id", "exp": datetime.utcnow() + timedelta(minutes=1)}
+    token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
+
     jwt_bearer = JWTBearer()
-    
-    # Create expired token
-    expired_payload = {"sub": "test_user", "exp": datetime.utcnow() - timedelta(hours=1)}
-    expired_token = jwt.encode(expired_payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
-    
-    credentials = Mock(scheme="Bearer", credentials=expired_token)
-    with pytest.raises(HTTPException) as exc:
-        await jwt_bearer(credentials)
-    assert exc.value.status_code == 403
-    assert "Token has expired" in str(exc.value.detail)
+
+    # Mock a FastAPI request with an invalid Authorization scheme
+    mock_request = Mock()
+    mock_request.headers = {"Authorization": f"Token {token}"}
+
+    # It should raise an HTTPException for an invalid scheme
+    with pytest.raises(HTTPException) as exc_info:
+        await jwt_bearer(mock_request)
+    assert exc_info.value.status_code == 403
+    assert "Invalid authentication scheme" in str(exc_info.value.detail)
+
+@pytest.mark.asyncio
+async def test_jwt_bearer_expired_token():
+    # Create an expired token
+    payload = {"sub": "user_id", "exp": datetime.utcnow() - timedelta(minutes=1)}
+    token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
+    jwt_bearer = JWTBearer()
+
+    # Mock a FastAPI request with an expired token
+    mock_request = Mock()
+    mock_request.headers = {"Authorization": f"Bearer {token}"}
+
+    # It should raise an HTTPException for expired tokens
+    with pytest.raises(HTTPException) as exc_info:
+        await jwt_bearer(mock_request)
+    assert exc_info.value.status_code == 401
+    assert "Token has expired" in str(exc_info.value.detail)
 
 @pytest.mark.asyncio
 async def test_rate_limit_decorator():
@@ -176,10 +214,10 @@ async def test_cleanup(security_mgr):
 async def test_rate_limit_burst(security_mgr, mock_request):
     # Test burst handling
     for _ in range(5):
-        await security_mgr.check_rate_limit(mock_request, "5/second", 1)
+        await security_mgr.check_rate_limit(request=mock_request, limit="5/second", duration=1)
         
     with pytest.raises(RateLimitExceeded):
-        await security_mgr.check_rate_limit(mock_request, "5/second", 1)
+        await security_mgr.check_rate_limit(request=mock_request, limit="5/second", duration=1)
 
 @pytest.mark.asyncio
 async def test_blocked_ip_multiple_attempts(security_mgr, mock_request):
