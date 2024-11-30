@@ -2,6 +2,7 @@
 import pytest
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import text
 from unittest.mock import patch
 from fastapi import HTTPException
 from jose import jwt, JWTError
@@ -23,7 +24,7 @@ from auth import (
 @pytest.fixture
 def auth_manager():
     return AuthManager()
-
+'''
 @pytest.fixture
 async def test_user(test_db_session):
     for session in test_db_session:
@@ -46,6 +47,34 @@ async def test_user(test_db_session):
         user = result.fetchone()
         await session.commit()
         return user
+'''
+
+@pytest.fixture
+async def test_user(test_db_session):
+    async for session in test_db_session:
+        auth_mgr = AuthManager()
+        hashed_password = auth_mgr.get_password_hash("testpassword123")
+        user_data = {
+            "username": "testuser",
+            "email": "test@example.com",
+            "hashed_password": hashed_password,
+        }
+
+        # Wrap the SQL query with text()
+        result = await session.execute(
+            text(
+                """
+                INSERT INTO users (username, email, hashed_password)
+                VALUES (:username, :email, :hashed_password)
+                RETURNING id, username, email
+                """
+            ),
+            user_data,
+        )
+        user = result.fetchone()
+        await session.commit()
+        yield user
+
 
 def test_password_hashing(auth_manager):
     password = "mysecretpassword"
@@ -130,15 +159,19 @@ async def test_authenticate_user(test_db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_get_current_user_valid_token(auth_manager, test_db_session, test_user):
-    async for session in test_db_session:
-        test_user = await test_user
-        # Create a valid token
-        token = auth_manager.create_access_token({"sub": test_user.username})
-    
-        # Get current user
-        user = await auth_manager.get_current_user(token, test_db_session)
-        assert user is not None
-        assert user.username == test_user.username
+    # Consume the yielded user from the test_user fixture
+    async for user in test_user:
+        # Create a valid token for the user
+        token = auth_manager.create_access_token({"sub": user.username})
+
+        # Retrieve the current user with the token
+        async for session in test_db_session:
+            current_user = await auth_manager.get_current_user(token, session)
+
+        # Validate the retrieved user
+        assert current_user is not None
+        assert current_user.username == user.username
+
 '''
 @pytest.mark.asyncio
 async def test_get_current_user_invalid_token(auth_manager, test_db_session):
