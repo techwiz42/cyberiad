@@ -4,7 +4,7 @@ import pytest
 from fastapi import HTTPException
 from unittest.mock import Mock
 import asyncio
-from datetime import datetime, timedelta, UTC  # Make sure UTC is explicitly imported
+from datetime import datetime, timedelta, UTC
 import jwt
 from security_manager import SecurityManager, RateLimitExceeded, JWTBearer
 
@@ -44,17 +44,10 @@ async def test_jwt_bearer_invalid_scheme():
 async def test_rate_limit_burst():
     security_mgr = SecurityManager()
     mock_request = MockRequest()
-    cache_key = f"{mock_request.client.host}:{mock_request.url.path}"
     
     # First 5 requests should succeed
     for _ in range(5):
         try:
-            if cache_key in security_mgr.api_key_cache:
-                last_request_time = security_mgr.api_key_cache[cache_key]
-                current_time = datetime.now(UTC)
-                if (current_time - last_request_time).total_seconds() < 1:
-                    await asyncio.sleep(1.1)  # Wait for the rate limit to reset
-                    
             await security_mgr.check_rate_limit(mock_request, "5/second", 1)
             await asyncio.sleep(0.1)  # Small delay between requests
         except RateLimitExceeded:

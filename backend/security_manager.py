@@ -3,8 +3,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from datetime import datetime, timedelta, UTC
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from typing import Optional, Dict
-from datetime import datetime, timedelta
+from typing import Optional, Dict, List
 import jwt
 import logging
 import os
@@ -14,41 +13,34 @@ logger = logging.getLogger(__name__)
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM")
 
-# Rate limiting setup
-limiter = Limiter(key_func=get_remote_address)
-
 class RateLimitExceeded(HTTPException):
     def __init__(self, detail: str = "Rate limit exceeded"):
         super().__init__(status_code=429, detail=detail)
 
 class SecurityManager:
     def __init__(self):
-        self.api_key_cache: Dict[str, datetime] = {}
+        self.api_key_cache: Dict[str, List[datetime]] = {}  # Changed to store list of timestamps
         self.failed_attempts: Dict[str, int] = {}
         self.blocked_ips: Dict[str, datetime] = {}
 
     async def cleanup(self):
         """Remove expired entries from caches."""
-        current_time = datetime.utcnow()
+        current_time = datetime.now(UTC)
         
-        # Clean api_key_cache
-        self.api_key_cache = {
-            k: v for k, v in self.api_key_cache.items()
-            if (current_time - v).total_seconds() < 3600  # Remove entries older than 1 hour
-        }
+        # Clean api_key_cache - remove old timestamps
+        for key in list(self.api_key_cache.keys()):
+            self.api_key_cache[key] = [
+                ts for ts in self.api_key_cache[key]
+                if (current_time - ts).total_seconds() < 3600
+            ]
+            if not self.api_key_cache[key]:
+                del self.api_key_cache[key]
         
         # Clean blocked_ips
         self.blocked_ips = {
             k: v for k, v in self.blocked_ips.items()
             if v > current_time
         }
-
-class SecurityManager:
-    def __init__(self):
-        self.api_key_cache: Dict[str, datetime] = {}
-        self.failed_attempts: Dict[str, int] = {}
-        self.blocked_ips: Dict[str, datetime] = {}
-
 
     async def check_rate_limit(self, request: Request, limit: str, duration: int):
         """
@@ -61,27 +53,32 @@ class SecurityManager:
         """
         client_ip = request.client.host
         cache_key = f"{client_ip}:{request.url.path}"
-        
         current_time = datetime.now(UTC)
         max_requests = int(limit.split('/')[0])
+
+        # Initialize timestamps list if not exists
+        if cache_key not in self.api_key_cache:
+            self.api_key_cache[cache_key] = []
         
-        # Count requests in the current time window
-        requests_in_window = sum(
-            1 for timestamp in self.api_key_cache.values()
-            if (current_time - timestamp).total_seconds() < duration
-        )
+        # Clean old timestamps
+        self.api_key_cache[cache_key] = [
+            ts for ts in self.api_key_cache[cache_key]
+            if (current_time - ts).total_seconds() < duration
+        ]
         
-        if requests_in_window >= max_requests:
+        # Check if limit exceeded
+        if len(self.api_key_cache[cache_key]) >= max_requests:
             raise RateLimitExceeded()
-            
+        
         # Record this request
-        self.api_key_cache[cache_key] = current_time
+        self.api_key_cache[cache_key].append(current_time)
 
     async def check_blocked_ip(self, request: Request):
         """Check if IP is blocked."""
         client_ip = request.client.host
+        current_time = datetime.now(UTC)
         if client_ip in self.blocked_ips:
-            if datetime.utcnow() < self.blocked_ips[client_ip]:
+            if current_time < self.blocked_ips[client_ip]:
                 raise HTTPException(
                     status_code=403,
                     detail="IP address is blocked"
@@ -95,7 +92,7 @@ class SecurityManager:
         self.failed_attempts[client_ip] = self.failed_attempts.get(client_ip, 0) + 1
         
         if self.failed_attempts[client_ip] >= 5:
-            self.blocked_ips[client_ip] = datetime.utcnow() + timedelta(minutes=15)
+            self.blocked_ips[client_ip] = datetime.now(UTC) + timedelta(minutes=15)
             del self.failed_attempts[client_ip]
 
 class JWTBearer(HTTPBearer):
@@ -103,23 +100,30 @@ class JWTBearer(HTTPBearer):
         super(JWTBearer, self).__init__(auto_error=auto_error)
 
     async def __call__(self, request: Request):
-        credentials: HTTPAuthorizationCredentials = await super(JWTBearer, self).__call__(request)
-    
-        if not credentials:
+        auth_header = request.headers.get("Authorization")
+        
+        if not auth_header:
             raise HTTPException(
                 status_code=403,
                 detail="Invalid authentication credentials"
             )
-        
-        if credentials.scheme.lower() != "bearer":  # Changed comparison and added .lower()
+
+        scheme, _, token = auth_header.partition(" ")
+        if not scheme or scheme.lower() != "bearer":
             raise HTTPException(
                 status_code=403,
-                detail="Invalid authentication scheme"  # Changed error message
+                detail="Invalid authentication scheme"
             )
-    
+
+        if not token:
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid authentication credentials"
+            )
+            
         try:
             payload = jwt.decode(
-                credentials.credentials,
+                token,
                 JWT_SECRET_KEY,
                 algorithms=[JWT_ALGORITHM]
             )

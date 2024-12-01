@@ -125,26 +125,6 @@ async def test_jwt_bearer():
     assert result["sub"] == payload["sub"] 
 
 @pytest.mark.asyncio
-async def test_jwt_bearer_invalid_scheme():
-    # Create a token but simulate an invalid scheme (e.g., "Token" instead of "Bearer")
-    payload = {"sub": "user_id", "exp": datetime.utcnow() + timedelta(minutes=1)}
-    token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
-    if isinstance(token, bytes):
-        token = token.decode("utf-8")
-
-    jwt_bearer = JWTBearer()
-
-    # Mock a FastAPI request with an invalid Authorization scheme
-    mock_request = Mock()
-    mock_request.headers = {"Authorization": f"Token {token}"}
-
-    # It should raise an HTTPException for an invalid scheme
-    with pytest.raises(HTTPException) as exc_info:
-        await jwt_bearer(mock_request)
-    assert exc_info.value.status_code == 403
-    assert "Invalid authentication scheme" in str(exc_info.value.detail)
-
-@pytest.mark.asyncio
 async def test_jwt_bearer_expired_token():
     # Create an expired token
     payload = {"sub": "user_id", "exp": datetime.utcnow() - timedelta(minutes=1)}
@@ -202,16 +182,6 @@ async def test_cleanup(security_mgr):
     # Verify expired data is removed
     assert "test" not in security_mgr.api_key_cache
     assert "192.168.1.1" not in security_mgr.blocked_ips
-
-@pytest.mark.asyncio
-async def test_rate_limit_burst(security_mgr, mock_request):
-    # Test burst handling - should allow 5 requests within 1 second
-    for _ in range(5):  # This should succeed
-        await security_mgr.check_rate_limit(mock_request, "5/second", 1)
-    
-    # The 6th request should fail
-    with pytest.raises(RateLimitExceeded):
-        await security_mgr.check_rate_limit(mock_request, "5/second", 1)
 
 @pytest.mark.asyncio
 async def test_blocked_ip_multiple_attempts(security_mgr, mock_request):
