@@ -1,18 +1,24 @@
-// src/app/layout.tsx
+import './globals.css'
+import { ClientLayout } from '@/components/layout/ClientLayout'
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  title: 'Cyberiad',
+  description: 'Multi-user, multi-agent discussion platform',
+}
 
 export default function RootLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
-  console.log("Root layout rendering!");
   return (
     <html lang="en">
       <body>
-        <div>LAYOUT TEST</div>
-        {children}
+        <ClientLayout>
+          {children}
+        </ClientLayout>
       </body>
     </html>
   )
 }
-

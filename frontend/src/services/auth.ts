@@ -1,5 +1,6 @@
 // src/services/auth.ts
 import { api } from './api'
+import Cookies from 'js-cookie'
 
 export interface LoginCredentials {
   username: string
@@ -34,33 +35,33 @@ export const authService = {
         },
       }
     )
+    this.saveToken(response.data!.access_token)
     return response.data!
   },
 
   async register(credentials: RegisterCredentials): Promise<AuthResponse> {
-    const requestData = {
-      username: credentials.username,
-      email: credentials.email,
-      password: credentials.password
-    }
-
     const response = await api.post<AuthResponse>(
       '/api/auth/register',
-      requestData
+      credentials
     )
+    this.saveToken(response.data!.access_token)
     return response.data!
   },
 
   saveToken(token: string): void {
-    localStorage.setItem('token', token)
+    Cookies.set('token', token, {
+      expires: 7, // 7 days
+      path: '/',
+      sameSite: 'strict',
+      secure: process.env.NODE_ENV === 'production'
+    })
   },
 
   removeToken(): void {
-    localStorage.removeItem('token')
+    Cookies.remove('token', { path: '/' })
   },
 
   getToken(): string | null {
-    if (typeof window === 'undefined') return null
-    return localStorage.getItem('token')
+    return Cookies.get('token') || null
   }
 }

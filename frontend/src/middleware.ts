@@ -2,22 +2,38 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-export function middleware(request: NextRequest) {
-  const token = request.cookies.get('token')
+// Add routes that should be protected
+const protectedRoutes = ['/threads']
+// Add routes that logged-in users shouldn't access
+const authRoutes = ['/login', '/register']
 
-  // If trying to access /login or /register while already logged in
-  if (token && (request.nextUrl.pathname === '/login' || request.nextUrl.pathname === '/register')) {
+export function middleware(request: NextRequest) {
+  const token = request.cookies.get('token')?.value
+  const { pathname } = request.nextUrl
+  
+  // Redirect logged-in users trying to access auth routes
+  if (token && authRoutes.includes(pathname)) {
     return NextResponse.redirect(new URL('/threads', request.url))
   }
-
-  // If trying to access protected routes without being logged in
-  if (!token && request.nextUrl.pathname.startsWith('/threads')) {
-    return NextResponse.redirect(new URL('/login', request.url))
+  
+  // Redirect non-logged-in users trying to access protected routes
+  if (!token && protectedRoutes.some(route => pathname.startsWith(route))) {
+    const redirectUrl = new URL('/login', request.url)
+    redirectUrl.searchParams.set('from', pathname)
+    return NextResponse.redirect(redirectUrl)
   }
 
+  // Handle root route
+  if (pathname === '/') {
+    if (token) {
+      return NextResponse.redirect(new URL('/threads', request.url))
+    }
+    return NextResponse.redirect(new URL('/login', request.url))
+  }
+  
   return NextResponse.next()
 }
 
 export const config = {
-  matcher: ['/threads/:path*', '/login', '/register']
+  matcher: ['/((?!api|_next/static|_next/image|favicon.ico).*)']
 }
