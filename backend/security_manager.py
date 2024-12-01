@@ -13,6 +13,9 @@ logger = logging.getLogger(__name__)
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM")
 
+# Rate limiting setup
+limiter = Limiter(key_func=get_remote_address)
+
 class RateLimitExceeded(HTTPException):
     def __init__(self, detail: str = "Rate limit exceeded"):
         super().__init__(status_code=429, detail=detail)
