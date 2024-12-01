@@ -1,5 +1,6 @@
 from fastapi import Request, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from datetime import datetime, timedelta, UTC
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from typing import Optional, Dict
@@ -42,17 +43,38 @@ class SecurityManager:
             if v > current_time
         }
 
+class SecurityManager:
+    def __init__(self):
+        self.api_key_cache: Dict[str, datetime] = {}
+        self.failed_attempts: Dict[str, int] = {}
+        self.blocked_ips: Dict[str, datetime] = {}
+
+
     async def check_rate_limit(self, request: Request, limit: str, duration: int):
-        """Check rate limit for request."""
+        """
+        Check rate limit for request.
+        
+        Args:
+            request: FastAPI Request object
+            limit: String in format "X/timeunit" (e.g. "5/second")
+            duration: Time window in seconds
+        """
         client_ip = request.client.host
         cache_key = f"{client_ip}:{request.url.path}"
         
-        current_time = datetime.utcnow()
-        if cache_key in self.api_key_cache:
-            time_diff = (current_time - self.api_key_cache[cache_key]).total_seconds()
-            if time_diff < duration:
-                raise RateLimitExceeded()
+        current_time = datetime.now(UTC)
+        max_requests = int(limit.split('/')[0])
         
+        # Count requests in the current time window
+        requests_in_window = sum(
+            1 for timestamp in self.api_key_cache.values()
+            if (current_time - timestamp).total_seconds() < duration
+        )
+        
+        if requests_in_window >= max_requests:
+            raise RateLimitExceeded()
+            
+        # Record this request
         self.api_key_cache[cache_key] = current_time
 
     async def check_blocked_ip(self, request: Request):
@@ -82,19 +104,19 @@ class JWTBearer(HTTPBearer):
 
     async def __call__(self, request: Request):
         credentials: HTTPAuthorizationCredentials = await super(JWTBearer, self).__call__(request)
-        
+    
         if not credentials:
             raise HTTPException(
                 status_code=403,
                 detail="Invalid authentication credentials"
             )
-            
-        if not credentials.scheme == "Bearer":
+        
+        if credentials.scheme.lower() != "bearer":  # Changed comparison and added .lower()
             raise HTTPException(
                 status_code=403,
-                detail="Invalid authentication scheme."
+                detail="Invalid authentication scheme"  # Changed error message
             )
-            
+    
         try:
             payload = jwt.decode(
                 credentials.credentials,
