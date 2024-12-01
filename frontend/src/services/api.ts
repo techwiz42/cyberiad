@@ -42,14 +42,14 @@ export const api = {
   get: <T>(endpoint: string, options?: RequestInit) => 
     fetchApi<T>(endpoint, { ...options, method: 'GET' }),
     
-  post: <T>(endpoint: string, data?: any, options?: RequestInit) =>
+  post: <T>(endpoint: string, data?: Record<string, unknown> | URLSearchParams, options?: RequestInit) =>
     fetchApi<T>(endpoint, {
       ...options,
       method: 'POST',
       body: JSON.stringify(data),
     }),
     
-  put: <T>(endpoint: string, data?: any, options?: RequestInit) =>
+  put: <T>(endpoint: string, data?: Record<string, unknown> | URLSearchParams, options?: RequestInit) =>
     fetchApi<T>(endpoint, {
       ...options,
       method: 'PUT',
@@ -65,3 +65,4 @@ export function getAuthHeaders(token: string): HeadersInit {
     Authorization: `Bearer ${token}`,
   }
 }
+

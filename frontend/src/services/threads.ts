@@ -22,10 +22,10 @@ export const threadService = {
   async createThread(data: ThreadFormData, token: string): Promise<Thread> {
     const response = await api.post<Thread>(
       '/api/threads',
-      data,
+      { ...data }, // Convert ThreadFormData into a plain object
       { headers: getAuthHeaders(token) }
-    )
-    return response.data!
+    );
+    return response.data!;
   },
 
   async updateThread(

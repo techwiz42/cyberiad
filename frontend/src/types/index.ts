@@ -43,7 +43,7 @@ export interface ThreadAgent {
   id: string
   type: AgentType
   isActive: boolean
-  settings?: Record<string, any>
+  settings?: Record<string, Message>
 }
 
 // Message types
@@ -96,7 +96,7 @@ export interface PaginatedResponse<T> {
 // WebSocket types
 export interface WebSocketMessage {
   type: WebSocketMessageType
-  payload: any
+  payload: Message
   timestamp: string
 }
 
