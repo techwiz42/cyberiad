@@ -29,16 +29,35 @@ async def register_user(user_data: UserAuth, db: AsyncSession = Depends(db_manag
     try:
         existing_user = await db_manager.get_user_by_username(db, user_data.username)
         if existing_user:
-            raise HTTPException(status_code=400, detail="User already exists")
+            raise HTTPException(
+                status_code=400,
+                detail="User already exists"
+            )
 
+        logger.info(f"Attempting to create user: {user_data.username}")
         hashed_password = auth_manager.get_password_hash(user_data.password)
-        user = await db_manager.create_user(db, user_data.username, user_data.email, hashed_password)
-
+        user = await db_manager.create_user(
+            db, 
+            user_data.username, 
+            user_data.email, 
+            hashed_password
+        )
         access_token = auth_manager.create_access_token(data={"sub": user.username})
-        return {"access_token": access_token, "token_type": "bearer"}
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user_id": str(user.id),
+            "username": user.username
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error during user registration: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        raise HTTPException(
+            status_code=500,
+            detail="Internal Server Error"
+        )
 
 @auth_router.post("/token", response_model=Token)
 async def login(

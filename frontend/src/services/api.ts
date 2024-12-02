@@ -1,68 +1,93 @@
-// src/services/api.ts
-import { ApiResponse } from '@/types'
+// src/services/auth.ts
+import { api } from './api'
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
-
-class ApiError extends Error {
-  constructor(public status: number, message: string) {
-    super(message)
-    this.name = 'ApiError'
-  }
+export interface LoginCredentials {
+  username: string
+  password: string
 }
 
-async function fetchApi<T>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<ApiResponse<T>> {
-  const url = `${API_BASE_URL}${endpoint}`
-  const headers = {
-    'Content-Type': 'application/json',
-    ...options.headers,
-  }
+export interface RegisterCredentials {
+  username: string
+  email: string
+  password: string
+}
 
-  try {
-    const response = await fetch(url, { ...options, headers })
+export interface AuthResponse {
+  access_token: string
+  token_type: string
+  user_id: string
+  username: string
+}
+
+export const authService = {
+  async login(credentials: LoginCredentials): Promise<AuthResponse> {
+    console.log('Starting login with username:', credentials.username);
     
-    if (!response.ok) {
-      const error = await response.json()
-      throw new ApiError(response.status, error.detail || 'An error occurred')
+    const formData = new URLSearchParams()
+    formData.append('username', credentials.username)
+    formData.append('password', credentials.password)
+
+    try {
+      const response = await api.post<AuthResponse>(
+        '/api/auth/token',
+        formData,
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+        }
+      );
+      console.log('Login successful:', response);
+      this.saveToken(response.data!.access_token);
+      return response.data!;
+    } catch (error) {
+      console.log('Login failed:', error);
+      throw error;
     }
+  },
 
-    const data = await response.json()
-    return { data }
-  } catch (error) {
-    if (error instanceof ApiError) {
-      throw error
+  async register(credentials: RegisterCredentials): Promise<AuthResponse> {
+    console.log('Starting registration with credentials:', {
+      username: credentials.username,
+      email: credentials.email
+      // Don't log password
+    });
+    
+    try {
+      console.log('Making registration request to:', '/api/auth/register');
+      
+      const response = await api.post<AuthResponse>(
+        '/api/auth/register',
+        {
+          username: credentials.username,
+          email: credentials.email,
+          password: credentials.password
+        }
+      );
+      
+      console.log('Registration successful:', response);
+      this.saveToken(response.data!.access_token);
+      return response.data!;
+    } catch (error) {
+      console.error('Registration failed:', error);
+      throw new Error('Registration failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
     }
-    throw new ApiError(500, error instanceof Error ? error.message : 'An error occurred')
+  },
+
+  saveToken(token: string): void {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('token', token);
+    }
+  },
+
+  removeToken(): void {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('token');
+    }
+  },
+
+  getToken(): string | null {
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('token');
   }
 }
-
-export const api = {
-  get: <T>(endpoint: string, options?: RequestInit) => 
-    fetchApi<T>(endpoint, { ...options, method: 'GET' }),
-    
-  post: <T>(endpoint: string, data?: Record<string, unknown> | URLSearchParams, options?: RequestInit) =>
-    fetchApi<T>(endpoint, {
-      ...options,
-      method: 'POST',
-      body: JSON.stringify(data),
-    }),
-    
-  put: <T>(endpoint: string, data?: Record<string, unknown> | URLSearchParams, options?: RequestInit) =>
-    fetchApi<T>(endpoint, {
-      ...options,
-      method: 'PUT',
-      body: JSON.stringify(data),
-    }),
-    
-  delete: <T>(endpoint: string, options?: RequestInit) =>
-    fetchApi<T>(endpoint, { ...options, method: 'DELETE' }),
-}
-
-export function getAuthHeaders(token: string): HeadersInit {
-  return {
-    Authorization: `Bearer ${token}`,
-  }
-}
-

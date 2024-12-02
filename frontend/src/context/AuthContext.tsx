@@ -63,24 +63,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const register = async (credentials: RegisterCredentials) => {
-    try {
-      setError(null);
-      setIsLoading(true);
-      const response = await authService.register(credentials);
-      authService.saveToken(response.access_token);
-      setToken(response.access_token);
-      setUser({
-        id: response.user_id,
-        username: response.username
-      });
-      router.push('/threads');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to register');
-      throw err;
-    } finally {
-      setIsLoading(false);
-    }
-  };
+  try {
+    console.log('AuthContext: Starting registration process');
+    setError(null);
+    setIsLoading(true);
+    console.log('Calling authService.register');
+    const response = await authService.register(credentials);
+    console.log('Registration response received:', response);
+    setToken(response.access_token);
+    setUser({
+      id: response.user_id,
+      username: response.username
+    });
+    router.push('/threads');
+  } catch (err) {
+    console.error('AuthContext registration error:', err);
+    setError(err instanceof Error ? err.message : 'Failed to register');
+    throw err;
+  } finally {
+    setIsLoading(false);
+  }
+};
 
   const logout = () => {
     authService.removeToken();

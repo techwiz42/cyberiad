@@ -27,7 +27,7 @@ app.add_middleware(
         "http://cyberiad.ai:3001"
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 

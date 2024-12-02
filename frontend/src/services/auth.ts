@@ -1,6 +1,5 @@
 // src/services/auth.ts
 import { api } from './api'
-import Cookies from 'js-cookie'
 
 export interface LoginCredentials {
   username: string
@@ -22,46 +21,73 @@ export interface AuthResponse {
 
 export const authService = {
   async login(credentials: LoginCredentials): Promise<AuthResponse> {
+    console.log('Starting login with username:', credentials.username);
+    
     const formData = new URLSearchParams()
     formData.append('username', credentials.username)
     formData.append('password', credentials.password)
 
-    const response = await api.post<AuthResponse>(
-      '/api/auth/token',
-      formData,
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-      }
-    )
-    this.saveToken(response.data!.access_token)
-    return response.data!
+    try {
+      const response = await api.post<AuthResponse>(
+        '/api/auth/token',
+        formData,
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+        }
+      );
+      console.log('Login successful:', response);
+      this.saveToken(response.data!.access_token);
+      return response.data!;
+    } catch (error) {
+      console.log('Login failed:', error);
+      throw error;
+    }
   },
 
   async register(credentials: RegisterCredentials): Promise<AuthResponse> {
-    const response = await api.post<AuthResponse>(
-      '/api/auth/register',
-      credentials
-    )
-    this.saveToken(response.data!.access_token)
-    return response.data!
+    console.log('Starting registration with credentials:', {
+      username: credentials.username,
+      email: credentials.email
+      // Don't log password
+    });
+    
+    try {
+      console.log('Making registration request to:', '/api/auth/register');
+      
+      const response = await api.post<AuthResponse>(
+        '/api/auth/register',
+        {
+          username: credentials.username,
+          email: credentials.email,
+          password: credentials.password
+        }
+      );
+      
+      console.log('Registration successful:', response);
+      this.saveToken(response.data!.access_token);
+      return response.data!;
+    } catch (error) {
+      console.error('Registration failed:', error);
+      throw new Error('Registration failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+    }
   },
 
   saveToken(token: string): void {
-    Cookies.set('token', token, {
-      expires: 7, // 7 days
-      path: '/',
-      sameSite: 'strict',
-      secure: process.env.NODE_ENV === 'production'
-    })
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('token', token);
+    }
   },
 
   removeToken(): void {
-    Cookies.remove('token', { path: '/' })
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('token');
+    }
   },
 
   getToken(): string | null {
-    return Cookies.get('token') || null
+    if (typeof window === 'undefined') return null;
+    return localStorage.getItem('token');
   }
 }
